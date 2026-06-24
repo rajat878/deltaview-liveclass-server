@@ -243,16 +243,17 @@
     if (pc) pc.close();
     pc = new RTCPeerConnection(RTC_CONFIG);
 
-    pc.ontrack = (event) => {
-      console.log("🎥 Remote stream received");
-      const stream = event.streams[0];
-      remoteVideo.srcObject = stream;
-      remoteVideo.play().catch((err) => console.error(err));
-      show(liveScreen);
+   pc.ontrack = (event) => {
+       const stream = event.streams[0];
+       remoteVideo.srcObject = stream;
+       remoteVideo.play().catch((err) => console.error(err));
+       show(liveScreen);
 
-      // Start recording as soon as the stream arrives
-      startRecording(stream);
-    };
+       // Wait for stream to stabilize before recording
+       // (ontrack fires per-track; defer to after all tracks arrive)
+       clearTimeout(recordingStartTimer);
+       recordingStartTimer = setTimeout(() => startRecording(stream), 500);
+   };
 
     pc.onicecandidate = (event) => {
       if (!event.candidate) return;
