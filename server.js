@@ -49,19 +49,25 @@ io.on("connection", (socket) => {
     socket.emit("room-created", { roomId });
   });
 
-  socket.on("join-room", ({ roomId }) => {
+  // FIX: destructure 'name' alongside 'roomId' so it isn't silently dropped
+  socket.on("join-room", ({ roomId, name }) => {
     const id   = (roomId || "").trim().toUpperCase();
     const room = rooms[id];
     if (!room) {
       socket.emit("join-error", { message: "Room not found. Check the code and try again." });
       return;
     }
-    room.students.push(socket.id);
+    // FIX: store the student name alongside their socket id
+    const displayName = (name || "").trim() || null;
+    room.students.push({ id: socket.id, name: displayName });
     socket.join(id);
-    console.log(`👨‍🎓 student ${socket.id} joined ${id}`);
+    console.log(`👨‍🎓 student ${socket.id} (${displayName || "unnamed"}) joined ${id}`);
     socket.emit("join-success", { roomId: id });
+    // FIX: forward the name to the teacher as 'displayName'
     io.to(room.teacher).emit("student-joined", {
-      studentId: socket.id, studentCount: room.students.length,
+      studentId:    socket.id,
+      displayName:  displayName,
+      studentCount: room.students.length,
     });
   });
 
@@ -95,7 +101,8 @@ io.on("connection", (socket) => {
         continue;
       }
       const before = room.students.length;
-      room.students = room.students.filter((s) => s !== socket.id);
+      // FIX: filter by .id since students are now objects {id, name}
+      room.students = room.students.filter((s) => s.id !== socket.id);
       if (room.students.length < before) {
         io.to(room.teacher).emit("student-left", {
           studentId: socket.id, studentCount: room.students.length,
