@@ -26,13 +26,15 @@
              background: #6366f1; color: #fff; font-size: 1rem; font-weight: 600;
              cursor: pointer; transition: background .2s; }
     button:hover { background: #4f46e5; }
+    .btn-secondary { background: #334155; margin-top: 10px; }
+    .btn-secondary:hover { background: #475569; }
+    .btn-download { background: #16a34a; margin-top: 10px; }
+    .btn-download:hover { background: #15803d; }
     .error { color: #f87171; font-size: .88rem; margin-top: 10px; }
     .spinner { width: 48px; height: 48px; border: 4px solid #334155;
                border-top-color: #6366f1; border-radius: 50%;
                animation: spin 1s linear infinite; margin: 0 auto 20px; }
     @keyframes spin { to { transform: rotate(360deg); } }
-
-    /* ── Live screen ── */
     #live-screen { flex-direction: column; padding: 0; background: #000;
                    min-height: 100vh; align-items: stretch; }
     .live-bar { display: flex; align-items: center; gap: 8px; padding: 8px 14px;
@@ -43,25 +45,7 @@
     .spacer { flex: 1; }
     .live-bar button { width: auto; padding: 6px 14px; font-size: .8rem; background: #334155; }
     #remote-video { width: 100%; height: 100vh; object-fit: contain; display: block; }
-
-    /* Recording indicator in the live bar */
-    #rec-indicator { display: flex; align-items: center; gap: 5px;
-                     font-size: .75rem; color: #fca5a5; }
-    #rec-indicator .rec-dot { width: 8px; height: 8px; border-radius: 50%;
-                               background: #ef4444;
-                               animation: pulse 1s ease-in-out infinite; }
-
-    /* ── Ended screen download area ── */
-    #download-btn {
-      display: block; width: 100%; padding: 14px; margin-top: 16px;
-      border-radius: 10px; background: #16a34a; color: #fff;
-      font-size: 1rem; font-weight: 600; text-decoration: none;
-      transition: background .2s;
-    }
-    #download-btn:hover { background: #15803d; }
-    #download-size {
-      color: #94a3b8; font-size: .82rem; margin-top: 8px;
-    }
+    #download-status { color: #94a3b8; font-size: .82rem; margin-top: 10px; min-height: 1.2em; }
   </style>
 </head>
 <body>
@@ -73,7 +57,7 @@
     <p class="subtitle">Enter the room code shown on your teacher's screen</p>
     <input id="pin-input" type="text" maxlength="6" placeholder="ROOM CODE"
            autocomplete="off" style="text-transform:uppercase" />
-    <input id="name-input" type="text" maxlength="24" placeholder="Your name (required)"
+    <input id="name-input" type="text" maxlength="24" placeholder="Your name (optional)"
            autocomplete="off" />
     <button id="join-btn">Join Class</button>
     <p id="join-error" class="error hidden"></p>
@@ -92,10 +76,6 @@
   <div class="live-bar">
     <span class="live-dot"></span>
     <span>LIVE</span>
-    <!-- Recording indicator — shown once MediaRecorder starts -->
-    <span id="rec-indicator" class="hidden">
-      <span class="rec-dot"></span>REC
-    </span>
     <span class="spacer"></span>
     <button id="fullscreen-btn">⛶ Fullscreen</button>
   </div>
@@ -108,11 +88,13 @@
     <h2>Session Ended</h2>
     <p class="subtitle">The teacher has ended this live class.</p>
 
-    <!-- Download button — hidden until recording is ready -->
-    <a id="download-btn" class="hidden">⬇ Download Class Recording</a>
-    <p id="download-size" class="hidden"></p>
+    <!-- Download button: shown only when teacher pushes a download URL -->
+    <a id="download-btn" class="hidden" download="class-recording.mp4">
+      <button class="btn-download">⬇ Download Class Recording</button>
+    </a>
+    <p id="download-status"></p>
 
-    <button id="rejoin-btn" style="margin-top:16px;">Join Again</button>
+    <button id="rejoin-btn" class="btn-secondary">Join Again</button>
   </div>
 </div>
 
