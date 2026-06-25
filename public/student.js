@@ -17,14 +17,16 @@
   const downloadBtn    = document.getElementById("download-btn");
   const downloadStatus = document.getElementById("download-status");
 
-  let socket    = null;
-  let pc        = null;
-  let roomId    = null;
+  let socket   = null;
+  let pc       = null;
+  let roomId   = null;
+  let teacherId = null;
 
   const RTC_CONFIG = {
     iceServers: [
       { urls: "stun:stun.l.google.com:19302" },
       { urls: "stun:stun1.l.google.com:19302" },
+      // Add TURN server here if needed for restrictive networks
     ],
   };
 
@@ -49,23 +51,20 @@
     return window.location.origin;
   }
 
-  // ── finaliseRecording ─────────────────────────────────────────────────
-  // Called when "room-ended" arrives. Shows download button if the teacher
-  // passed a recording URL; otherwise shows a friendly "not available" note.
+  // ── finaliseRecording: called when "room-ended" carries a download URL ──
   function finaliseRecording(downloadUrl) {
     if (!downloadUrl) {
+      // Teacher ended without a recording URL — just show the ended screen
       downloadStatus.textContent = "No recording available for this session.";
       return;
     }
 
-    // The teacher's device is now serving the file — show the button.
     downloadBtn.href = downloadUrl;
     downloadBtn.classList.remove("hidden");
-    downloadStatus.textContent =
-      "📶 Recording served from teacher's device — make sure you're on the same Wi-Fi, then tap Download.";
+    downloadStatus.textContent = "Recording is ready — tap the button to save it.";
   }
 
-  // ── Connect ───────────────────────────────────────────────────────────
+  // ── Connect ──────────────────────────────────────────────────────────
   function connect() {
     clearError();
 
@@ -75,7 +74,9 @@
       return;
     }
 
-    if (socket) socket.disconnect();
+    if (socket) {
+      socket.disconnect();
+    }
 
     // Reset download UI on each new join
     downloadBtn.classList.add("hidden");
@@ -84,7 +85,9 @@
 
     show(waitingScreen);
 
-    socket = io(getServerUrl(), { transports: ["websocket", "polling"] });
+    socket = io(getServerUrl(), {
+      transports: ["websocket", "polling"],
+    });
 
     socket.on("connect", () => {
       console.log("✅ Connected to signaling server");
@@ -99,6 +102,7 @@
 
     socket.on("join-success", (data) => {
       console.log("✅ Joined room:", data.roomId);
+      // stay on waiting screen until the teacher's offer arrives
     });
 
     socket.on("join-error", (data) => {
@@ -106,28 +110,37 @@
       showError(data.message || "Unable to join room.");
     });
 
-    // ── room-ended: server forwards downloadUrl from teacher ──────────
+    // ── KEY FIX: "room-ended" now carries an optional downloadUrl ────────
+    // The teacher's Android app calls endSession(), which emits "end-room"
+    // to the signaling server with { roomId, downloadUrl? }.
+    // The server forwards "room-ended" with that same payload to all students.
     socket.on("room-ended", (data) => {
       console.log("❌ Room ended by teacher", data);
       cleanupPeerConnection();
       show(endedScreen);
+
+      // data may be undefined (server sent no payload) or { downloadUrl: "..." }
       const url = data && data.downloadUrl ? data.downloadUrl : null;
       finaliseRecording(url);
     });
 
     socket.on("offer", async (data) => {
       console.log("📨 Offer received");
+      teacherId = data.senderId;
       await handleOffer(data.senderId, data.roomId, data.sdp);
     });
 
     socket.on("ice-candidate", async (data) => {
       if (!pc) return;
       try {
-        await pc.addIceCandidate(new RTCIceCandidate({
-          candidate:     data.candidate.candidate,
-          sdpMid:        data.candidate.sdpMid,
-          sdpMLineIndex: data.candidate.sdpMLineIndex,
-        }));
+        await pc.addIceCandidate(
+          new RTCIceCandidate({
+            candidate:     data.candidate.candidate,
+            sdpMid:        data.candidate.sdpMid,
+            sdpMLineIndex: data.candidate.sdpMLineIndex,
+          })
+        );
+        console.log("🧊 ICE candidate added");
       } catch (e) {
         console.error("Failed to add ICE candidate", e);
       }
@@ -138,15 +151,16 @@
     });
   }
 
-  // ── WebRTC ────────────────────────────────────────────────────────────
+  // ── WebRTC offer handling ────────────────────────────────────────────
   async function handleOffer(teacherIdArg, roomIdArg, sdpData) {
     if (pc) pc.close();
+
     pc = new RTCPeerConnection(RTC_CONFIG);
 
     pc.ontrack = (event) => {
       console.log("🎥 Remote stream received");
       remoteVideo.srcObject = event.streams[0];
-      remoteVideo.play().catch(console.error);
+      remoteVideo.play().catch((err) => console.error(err));
       show(liveScreen);
     };
 
@@ -164,24 +178,33 @@
     };
 
     pc.onconnectionstatechange = () => {
-      if (pc.connectionState === "failed") {
-        show(joinScreen);
-        showError("Connection to the teacher failed. Please rejoin.");
-        cleanupPeerConnection();
+      console.log("WebRTC state:", pc.connectionState);
+      switch (pc.connectionState) {
+        case "connected":    show(liveScreen); break;
+        case "disconnected": break;
+        case "failed":
+          console.error("Connection failed");
+          show(joinScreen);
+          showError("Connection to the teacher failed. Please rejoin.");
+          cleanupPeerConnection();
+          break;
+        case "closed": break;
       }
     };
 
     try {
-      await pc.setRemoteDescription(
-        new RTCSessionDescription({ type: "offer", sdp: sdpData.sdp })
-      );
+      const offer = new RTCSessionDescription({ type: "offer", sdp: sdpData.sdp });
+      await pc.setRemoteDescription(offer);
+
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
+
       socket.emit("answer", {
         targetId: teacherIdArg,
         roomId:   roomIdArg,
         sdp: { type: answer.type, sdp: answer.sdp },
       });
+
       console.log("✅ Answer sent");
     } catch (e) {
       console.error("handleOffer failed", e);
@@ -195,12 +218,7 @@
     if (remoteVideo) { remoteVideo.pause(); remoteVideo.srcObject = null; }
   }
 
-  // ── Auto-fill room code from URL ?room=ROOMCODE ───────────────────────
-  const urlParams = new URLSearchParams(window.location.search);
-  const roomParam = urlParams.get("room");
-  if (roomParam) pinInput.value = roomParam.toUpperCase();
-
-  // ── Event listeners ───────────────────────────────────────────────────
+  // ── Event listeners ──────────────────────────────────────────────────
   joinBtn.addEventListener("click", connect);
   pinInput.addEventListener("keydown",  (e) => { if (e.key === "Enter") connect(); });
   nameInput.addEventListener("keydown", (e) => { if (e.key === "Enter") connect(); });
@@ -211,7 +229,7 @@
   });
 
   fullscreenBtn.addEventListener("click", () => {
-    if (remoteVideo.requestFullscreen) remoteVideo.requestFullscreen();
+    if (remoteVideo.requestFullscreen)       remoteVideo.requestFullscreen();
     else if (remoteVideo.webkitRequestFullscreen) remoteVideo.webkitRequestFullscreen();
   });
 })();
