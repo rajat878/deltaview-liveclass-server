@@ -1,114 +1,116 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// DeltaView Live Class – Signaling Server  (Node.js + Socket.IO)
-// Deploy on Render / Railway / any Node host.
-// ─────────────────────────────────────────────────────────────────────────────
-const { createServer } = require("http");
-const { Server }       = require("socket.io");
+const express = require("express");
+const http    = require("http");
+const path    = require("path");
+const { Server } = require("socket.io");
+const cors    = require("cors");
 
-const PORT = process.env.PORT || 3000;
+const app = express();
+app.use(cors());
 
-const httpServer = createServer((req, res) => {
-  res.writeHead(200);
-  res.end("DeltaView signaling server running");
-});
+const server = http.createServer(app);
 
-const io = new Server(httpServer, {
+const io = new Server(server, {
   cors: { origin: "*", methods: ["GET", "POST"] },
+  allowEIO3: true,   // Android Socket.IO client 2.x compatibility
 });
 
-// roomId → { teacherSocketId, students: Set<socketId> }
-const rooms = new Map();
+// ── In-memory room storage ────────────────────────────────────────────────────
+const rooms = {};
 
+// ── Static files — NO cache so updated student.js always loads fresh ──────────
+app.use(express.static(path.join(__dirname, "public"), {
+  etag:         false,
+  lastModified: false,
+  setHeaders(res) {
+    res.setHeader("Cache-Control", "no-store");
+  },
+}));
+
+// ── Health check ──────────────────────────────────────────────────────────────
+app.get("/health", (req, res) => {
+  res.json({
+    status: "ok",
+    rooms:  Object.keys(rooms).length,
+    activeRooms: Object.entries(rooms).map(([id, r]) => ({
+      id, students: r.students.length,
+    })),
+  });
+});
+
+// ── Socket.IO ─────────────────────────────────────────────────────────────────
 io.on("connection", (socket) => {
-  console.log("connect", socket.id);
+  console.log(`✅ connected: ${socket.id}`);
 
-  // ── Teacher creates a room ──────────────────────────────────────────
   socket.on("create-room", () => {
-    const roomId = Math.random().toString(36).slice(2, 8).toUpperCase();
-    rooms.set(roomId, { teacherSocketId: socket.id, students: new Set() });
+    const roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
+    rooms[roomId] = { teacher: socket.id, students: [] };
     socket.join(roomId);
+    console.log(`🏫 room created: ${roomId}`);
     socket.emit("room-created", { roomId });
-    console.log("room-created", roomId);
   });
 
-  // ── Student joins ───────────────────────────────────────────────────
+  // FIX: destructure 'name' alongside 'roomId' so it isn't silently dropped
   socket.on("join-room", ({ roomId, name }) => {
-    const room = rooms.get(roomId);
+    const id   = (roomId || "").trim().toUpperCase();
+    const room = rooms[id];
     if (!room) {
       socket.emit("join-error", { message: "Room not found. Check the code and try again." });
       return;
     }
-    room.students.add(socket.id);
-    socket.join(roomId);
-    socket.data.roomId      = roomId;
-    socket.data.displayName = name || "";
-
-    socket.emit("join-success", { roomId });
-
-    // Tell the teacher a new student arrived
-    io.to(room.teacherSocketId).emit("student-joined", {
-      studentId:   socket.id,
-      displayName: name || "",
+    // FIX: store the student name alongside their socket id
+    const displayName = (name || "").trim() || null;
+    room.students.push({ id: socket.id, name: displayName });
+    socket.join(id);
+    console.log(`👨‍🎓 student ${socket.id} (${displayName || "unnamed"}) joined ${id}`);
+    socket.emit("join-success", { roomId: id });
+    // FIX: forward the name to the teacher as 'displayName'
+    io.to(room.teacher).emit("student-joined", {
+      studentId:    socket.id,
+      displayName:  displayName,
+      studentCount: room.students.length,
     });
-    console.log("student-joined", socket.id, "→ room", roomId);
   });
 
-  // ── WebRTC signaling passthrough ────────────────────────────────────
-  socket.on("offer", (data) => {
-    io.to(data.targetId).emit("offer", { ...data, senderId: socket.id });
+  socket.on("offer",         ({ targetId, roomId, sdp })       =>
+    io.to(targetId).emit("offer",         { senderId: socket.id, roomId, sdp }));
+
+  socket.on("answer",        ({ targetId, roomId, sdp })       =>
+    io.to(targetId).emit("answer",        { senderId: socket.id, roomId, sdp }));
+
+  socket.on("ice-candidate", ({ targetId, roomId, candidate }) => {
+    const type = candidate?.candidate?.split(" ")[7] || "?";
+    console.log(`🧊 ICE [${type}]: ${socket.id} → ${targetId}`);
+    io.to(targetId).emit("ice-candidate", { senderId: socket.id, roomId, candidate });
   });
 
-  socket.on("answer", (data) => {
-    io.to(data.targetId).emit("answer", { ...data, senderId: socket.id });
+  socket.on("end-room", ({ roomId }) => {
+    const id = (roomId || "").trim().toUpperCase();
+    if (rooms[id]?.teacher === socket.id) {
+      io.to(id).emit("room-ended");
+      delete rooms[id];
+    }
   });
 
-  socket.on("ice-candidate", (data) => {
-    io.to(data.targetId).emit("ice-candidate", { ...data, senderId: socket.id });
-  });
-
-  // ── Teacher ends the room ───────────────────────────────────────────
-  // THE KEY FIX: forward downloadUrl (if present) to every student so
-  // the browser can show the download button.
-  socket.on("end-room", ({ roomId, downloadUrl }) => {
-    console.log("end-room", roomId, "downloadUrl:", downloadUrl || "(none)");
-
-    const room = rooms.get(roomId);
-    if (!room) return;
-
-    // Build the payload – include downloadUrl only when the teacher sent one
-    const payload = downloadUrl ? { downloadUrl } : {};
-
-    // Broadcast to every student in the room
-    room.students.forEach((studentId) => {
-      io.to(studentId).emit("room-ended", payload);
-    });
-
-    rooms.delete(roomId);
-  });
-
-  // ── Cleanup on disconnect ───────────────────────────────────────────
   socket.on("disconnect", () => {
-    console.log("disconnect", socket.id);
-
-    const roomId = socket.data.roomId;
-    if (!roomId) return;
-
-    const room = rooms.get(roomId);
-    if (!room) return;
-
-    if (room.teacherSocketId === socket.id) {
-      // Teacher disconnected unexpectedly – notify students
-      room.students.forEach((sid) => {
-        io.to(sid).emit("room-ended", {});
-      });
-      rooms.delete(roomId);
-    } else {
-      room.students.delete(socket.id);
-      io.to(room.teacherSocketId).emit("student-left", { studentId: socket.id });
+    console.log(`❌ disconnected: ${socket.id}`);
+    for (const id in rooms) {
+      const room = rooms[id];
+      if (room.teacher === socket.id) {
+        io.to(id).emit("room-ended");
+        delete rooms[id];
+        continue;
+      }
+      const before = room.students.length;
+      // FIX: filter by .id since students are now objects {id, name}
+      room.students = room.students.filter((s) => s.id !== socket.id);
+      if (room.students.length < before) {
+        io.to(room.teacher).emit("student-left", {
+          studentId: socket.id, studentCount: room.students.length,
+        });
+      }
     }
   });
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`Signaling server listening on port ${PORT}`);
-});
+const PORT = process.env.PORT || 3000;
+server.listen(PORT, () => console.log(`🚀 server on port ${PORT}`));
