@@ -63,6 +63,29 @@
     iceServers: [
       { urls: "stun:stun.l.google.com:19302" },
       { urls: "stun:stun1.l.google.com:19302" },
+      // TURN (Metered.ca relay) — required for mobile-data / CGNAT / symmetric
+      // NAT networks where a direct STUN-only path can't be established.
+      { urls: "stun:stun.relay.metered.ca:80" },
+      {
+        urls: "turn:global.relay.metered.ca:80",
+        username: "e93bee4c347d0e117a51a185",
+        credential: "6klB8AQpfbNOJZcq",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:80?transport=tcp",
+        username: "e93bee4c347d0e117a51a185",
+        credential: "6klB8AQpfbNOJZcq",
+      },
+      {
+        urls: "turn:global.relay.metered.ca:443",
+        username: "e93bee4c347d0e117a51a185",
+        credential: "6klB8AQpfbNOJZcq",
+      },
+      {
+        urls: "turns:global.relay.metered.ca:443?transport=tcp",
+        username: "e93bee4c347d0e117a51a185",
+        credential: "6klB8AQpfbNOJZcq",
+      },
     ],
   };
 
