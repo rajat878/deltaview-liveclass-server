@@ -106,18 +106,17 @@ io.on("connection", (socket) => {
   });
 
   // ── Teacher ends the room ───────────────────────────────────────────
-  // Forwards downloadUrl so students can tap the download button
-  socket.on("end-room", ({ roomId, downloadUrl }) => {
-    console.log("end-room", roomId, "downloadUrl:", downloadUrl || "(none)");
-    const room = rooms.get(roomId);
-    if (!room) return;
+ // ── Teacher ends the room ───────────────────────────────────────────
+ socket.on("end-room", ({ roomId }) => {
+   console.log("end-room", roomId);
+   const room = rooms.get(roomId);
+   if (!room) return;
 
-    const payload = downloadUrl ? { downloadUrl } : {};
-    room.students.forEach((studentId) => {
-      io.to(studentId).emit("room-ended", payload);
-    });
-    rooms.delete(roomId);
-  });
+   room.students.forEach((studentId) => {
+     io.to(studentId).emit("room-ended", {});
+   });
+   rooms.delete(roomId);
+ });
 
   // ── Cleanup on disconnect ───────────────────────────────────────────
   socket.on("disconnect", () => {

@@ -107,13 +107,11 @@
     });
 
     // ── room-ended: server forwards downloadUrl from teacher ──────────
-    socket.on("room-ended", (data) => {
-      console.log("❌ Room ended by teacher", data);
-      cleanupPeerConnection();
-      show(endedScreen);
-      const url = data && data.downloadUrl ? data.downloadUrl : null;
-      finaliseRecording(url);
-    });
+   socket.on("room-ended", () => {
+     console.log("❌ Room ended by teacher");
+     cleanupPeerConnection();
+     show(endedScreen);
+   });
 
     socket.on("offer", async (data) => {
       console.log("📨 Offer received");
