@@ -106,17 +106,16 @@ io.on("connection", (socket) => {
   });
 
   // ── Teacher ends the room ───────────────────────────────────────────
- // ── Teacher ends the room ───────────────────────────────────────────
- socket.on("end-room", ({ roomId }) => {
-   console.log("end-room", roomId);
-   const room = rooms.get(roomId);
-   if (!room) return;
+  socket.on("end-room", ({ roomId }) => {
+    console.log("end-room", roomId);
+    const room = rooms.get(roomId);
+    if (!room) return;
 
-   room.students.forEach((studentId) => {
-     io.to(studentId).emit("room-ended", {});
-   });
-   rooms.delete(roomId);
- });
+    room.students.forEach((studentId) => {
+      io.to(studentId).emit("room-ended", {});
+    });
+    rooms.delete(roomId);
+  });
 
   // ── Cleanup on disconnect ───────────────────────────────────────────
   socket.on("disconnect", () => {

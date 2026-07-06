@@ -1,4 +1,26 @@
 (() => {
+  // ── Surface any crash on-screen. Without this, a single JS error anywhere
+  // in this file (e.g. a missing/renamed element ID) fails completely
+  // silently on a phone — the page just looks dead with no way to tell why.
+  window.addEventListener("error", (e) => {
+    console.error("Uncaught error:", e.error || e.message);
+    showFatalError(`Something went wrong loading the page: ${e.message}`);
+  });
+
+  function showFatalError(msg) {
+    let el = document.getElementById("fatal-error-banner");
+    if (!el) {
+      el = document.createElement("div");
+      el.id = "fatal-error-banner";
+      el.style.cssText =
+        "position:fixed;top:0;left:0;right:0;z-index:9999;" +
+        "background:#7f1d1d;color:#fff;padding:12px 16px;" +
+        "font:14px -apple-system,sans-serif;text-align:center;";
+      document.body.prepend(el);
+    }
+    el.textContent = msg + " — please refresh the page.";
+  }
+
   // ── Screens ──────────────────────────────────────────────────────────
   const joinScreen    = document.getElementById("join-screen");
   const waitingScreen = document.getElementById("waiting-screen");
@@ -13,9 +35,25 @@
   const fullscreenBtn = document.getElementById("fullscreen-btn");
   const rejoinBtn     = document.getElementById("rejoin-btn");
 
-  // ── Download UI ──────────────────────────────────────────────────────
-  const downloadBtn    = document.getElementById("download-btn");
-  const downloadStatus = document.getElementById("download-status");
+  // ── Fail loudly (but not silently-dead) if the HTML and this script are
+  // out of sync — e.g. an element was renamed/removed in one file but not
+  // the other. Previously a single null here (used later, e.g. at
+  // joinBtn.addEventListener) would throw and abort the whole script before
+  // ANY button on the page got wired up — Join, Rejoin, Fullscreen, all of
+  // it — with zero visible feedback. Now we check up front and report
+  // exactly what's missing.
+  const required = {
+    joinScreen, waitingScreen, liveScreen, endedScreen,
+    joinBtn, pinInput, nameInput, joinError,
+    remoteVideo, fullscreenBtn, rejoinBtn,
+  };
+  const missing = Object.entries(required)
+    .filter(([, el]) => !el)
+    .map(([name]) => name);
+  if (missing.length > 0) {
+    showFatalError(`Page failed to load correctly (missing: ${missing.join(", ")})`);
+    return; // bail out before wiring up anything that would just throw
+  }
 
   let socket    = null;
   let pc        = null;
@@ -49,25 +87,14 @@
     return window.location.origin;
   }
 
-  // ── finaliseRecording ─────────────────────────────────────────────────
-  // Called when "room-ended" arrives. Shows download button if the teacher
-  // passed a recording URL; otherwise shows a friendly "not available" note.
-  function finaliseRecording(downloadUrl) {
-    if (!downloadUrl) {
-      downloadStatus.textContent = "No recording available for this session.";
-      return;
-    }
-
-    // The teacher's device is now serving the file — show the button.
-    downloadBtn.href = downloadUrl;
-    downloadBtn.classList.remove("hidden");
-    downloadStatus.textContent =
-      "📶 Recording served from teacher's device — make sure you're on the same Wi-Fi, then tap Download.";
-  }
-
   // ── Connect ───────────────────────────────────────────────────────────
   function connect() {
     clearError();
+
+    if (typeof io === "undefined") {
+      showError("Live chat failed to load. Please refresh the page and try again.");
+      return;
+    }
 
     roomId = pinInput.value.trim().toUpperCase();
     if (!roomId) {
@@ -77,21 +104,26 @@
 
     if (socket) socket.disconnect();
 
-    // Reset download UI on each new join
-    downloadBtn.classList.add("hidden");
-    downloadBtn.href = "";
-    downloadStatus.textContent = "";
-
     show(waitingScreen);
+
+    const waitingSubtitle = waitingScreen.querySelector(".subtitle");
+    const slowConnectTimer = setTimeout(() => {
+      if (waitingSubtitle) {
+        waitingSubtitle.textContent =
+          "Still connecting — the server may be waking up, this can take up to a minute…";
+      }
+    }, 8000);
 
     socket = io(getServerUrl(), { transports: ["websocket", "polling"] });
 
     socket.on("connect", () => {
+      clearTimeout(slowConnectTimer);
       console.log("✅ Connected to signaling server");
       socket.emit("join-room", { roomId, name: nameInput.value.trim() });
     });
 
     socket.on("connect_error", (err) => {
+      clearTimeout(slowConnectTimer);
       console.error("Connection error:", err);
       show(joinScreen);
       showError("Could not reach the server. Check your internet connection.");
@@ -106,12 +138,11 @@
       showError(data.message || "Unable to join room.");
     });
 
-    // ── room-ended: server forwards downloadUrl from teacher ──────────
-   socket.on("room-ended", () => {
-     console.log("❌ Room ended by teacher");
-     cleanupPeerConnection();
-     show(endedScreen);
-   });
+    socket.on("room-ended", () => {
+      console.log("❌ Room ended by teacher");
+      cleanupPeerConnection();
+      show(endedScreen);
+    });
 
     socket.on("offer", async (data) => {
       console.log("📨 Offer received");
