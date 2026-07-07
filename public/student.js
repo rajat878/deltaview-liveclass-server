@@ -34,6 +34,7 @@
   const remoteVideo   = document.getElementById("remote-video");
   const fullscreenBtn = document.getElementById("fullscreen-btn");
   const rejoinBtn     = document.getElementById("rejoin-btn");
+  const micBtn        = document.getElementById("mic-btn");
 
   // ── Fail loudly (but not silently-dead) if the HTML and this script are
   // out of sync — e.g. an element was renamed/removed in one file but not
@@ -45,7 +46,7 @@
   const required = {
     joinScreen, waitingScreen, liveScreen, endedScreen,
     joinBtn, pinInput, nameInput, joinError,
-    remoteVideo, fullscreenBtn, rejoinBtn,
+    remoteVideo, fullscreenBtn, rejoinBtn, micBtn,
   };
   const missing = Object.entries(required)
     .filter(([, el]) => !el)
@@ -55,9 +56,11 @@
     return; // bail out before wiring up anything that would just throw
   }
 
-  let socket    = null;
-  let pc        = null;
-  let roomId    = null;
+  let socket       = null;
+  let pc           = null;
+  let roomId       = null;
+  let micTrack        = null; // local mic MediaStreamTrack, once permission is granted
+  let micTransceiver   = null; // the reserved "send our mic to teacher" m-line for the current pc
 
   const RTC_CONFIG = {
     iceServers: [
@@ -227,6 +230,22 @@
       await pc.setRemoteDescription(
         new RTCSessionDescription({ type: "offer", sdp: sdpData.sdp })
       );
+
+      // The teacher's offer reserves a 3rd m-line (after screen-video and
+      // teacher-audio) specifically to receive OUR mic. It arrives here as
+      // an existing transceiver with direction "sendonly" already negotiated
+      // (recvonly on the teacher's side, mirrored). We just need to attach
+      // our mic track to its sender — no extra offer/answer round trip
+      // needed since the m-line already exists in this very answer.
+      const transceivers = pc.getTransceivers();
+      micTransceiver = transceivers[2] || null;
+      if (!micTransceiver) {
+        console.warn("No reserved audio-return transceiver found — mic feature unavailable this session.");
+      } else if (micTrack) {
+        // Rejoining/renegotiated: re-attach whatever mic track we already have.
+        await micTransceiver.sender.replaceTrack(micTrack);
+      }
+
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       socket.emit("answer", {
@@ -245,6 +264,45 @@
   function cleanupPeerConnection() {
     if (pc) { pc.close(); pc = null; }
     if (remoteVideo) { remoteVideo.pause(); remoteVideo.srcObject = null; }
+    micTransceiver = null;
+    setMicButtonState(false);
+  }
+
+  function setMicButtonState(on) {
+    micBtn.textContent = on ? "🎤 Mic on" : "🔇 Mic off";
+    micBtn.classList.toggle("mic-on", on);
+  }
+
+  async function toggleMic() {
+    if (!micTransceiver) {
+      console.warn("Mic toggled before connection was ready.");
+      return;
+    }
+
+    const turningOn = !(micTrack && micTrack.enabled);
+
+    if (turningOn) {
+      try {
+        if (!micTrack) {
+          // First time enabling this session — ask for the mic permission
+          // and attach it. replaceTrack() on an already-negotiated m-line
+          // does NOT require a renegotiation round trip.
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          micTrack = stream.getAudioTracks()[0];
+          await micTransceiver.sender.replaceTrack(micTrack);
+        }
+        micTrack.enabled = true;
+        setMicButtonState(true);
+      } catch (e) {
+        console.error("Could not access microphone", e);
+        const original = micBtn.textContent;
+        micBtn.textContent = "⚠️ Mic blocked";
+        setTimeout(() => { micBtn.textContent = original; }, 2500);
+      }
+    } else {
+      micTrack.enabled = false;
+      setMicButtonState(false);
+    }
   }
 
   // ── Auto-fill room code from URL ?room=ROOMCODE ───────────────────────
@@ -261,6 +319,8 @@
     show(joinScreen);
     pinInput.value = "";
   });
+
+  micBtn.addEventListener("click", toggleMic);
 
   fullscreenBtn.addEventListener("click", () => {
     if (remoteVideo.requestFullscreen) remoteVideo.requestFullscreen();
