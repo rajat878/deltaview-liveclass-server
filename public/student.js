@@ -62,6 +62,20 @@
   let micTrack        = null; // local mic MediaStreamTrack, once permission is granted
   let micTransceiver   = null; // the reserved "send our mic to teacher" m-line for the current pc
 
+  // ── Relay console logs to the teacher's app via the signaling server,
+  // so they show up directly in Android Studio's Logcat (tag:LiveClassManager)
+  // without needing chrome://inspect USB debugging on the student's phone.
+  function logToTeacher(...args) {
+    const message = args.map(a => {
+      if (a instanceof Error) return a.message || String(a);
+      return typeof a === "string" ? a : JSON.stringify(a);
+    }).join(" ");
+    console.log(...args);
+    if (socket && socket.connected && roomId) {
+      socket.emit("client-log", { roomId, message });
+    }
+  }
+
   const RTC_CONFIG = {
     iceServers: [
       { urls: "stun:stun.l.google.com:19302" },
@@ -146,7 +160,7 @@
 
     socket.on("connect", () => {
       clearTimeout(slowConnectTimer);
-      console.log("✅ Connected to signaling server");
+      logToTeacher("✅ Connected to signaling server");
 
       // BUG FIX: Socket.IO's "connect" event fires on every reconnect too,
       // not just the first connection — including silent automatic
@@ -161,7 +175,7 @@
         hasJoinedOnce = true;
         socket.emit("join-room", { roomId, name: nameInput.value.trim() });
       } else {
-        console.warn("Reconnected after a drop — not auto-rejoining to avoid a duplicate roster entry.");
+        logToTeacher("Reconnected after a drop — not auto-rejoining to avoid a duplicate roster entry.");
         cleanupPeerConnection();
         show(joinScreen);
         showError("Connection was lost. Please rejoin the class.");
@@ -170,13 +184,13 @@
 
     socket.on("connect_error", (err) => {
       clearTimeout(slowConnectTimer);
-      console.error("Connection error:", err);
+      logToTeacher("Connection error:", err);
       show(joinScreen);
       showError("Could not reach the server. Check your internet connection.");
     });
 
     socket.on("join-success", (data) => {
-      console.log("✅ Joined room:", data.roomId);
+      logToTeacher("✅ Joined room:", data.roomId);
     });
 
     socket.on("join-error", (data) => {
@@ -185,13 +199,13 @@
     });
 
     socket.on("room-ended", () => {
-      console.log("❌ Room ended by teacher");
+      logToTeacher("❌ Room ended by teacher");
       cleanupPeerConnection();
       show(endedScreen);
     });
 
     socket.on("offer", async (data) => {
-      console.log("📨 Offer received");
+      logToTeacher("📨 Offer received");
       await handleOffer(data.senderId, data.roomId, data.sdp);
     });
 
@@ -204,7 +218,7 @@
           sdpMLineIndex: data.candidate.sdpMLineIndex,
         }));
       } catch (e) {
-        console.error("Failed to add ICE candidate", e);
+        logToTeacher("Failed to add ICE candidate", e);
       }
     });
 
@@ -219,7 +233,7 @@
     pc = new RTCPeerConnection(RTC_CONFIG);
 
     pc.ontrack = (event) => {
-      console.log("🎥 Remote stream received");
+      logToTeacher("🎥 Remote stream received");
       remoteVideo.srcObject = event.streams[0];
       remoteVideo.play().catch(console.error);
       show(liveScreen);
@@ -258,7 +272,7 @@
       // our mic track to its sender — no extra offer/answer round trip
       // needed since the m-line already exists in this very answer.
       const transceivers = pc.getTransceivers();
-      console.log(
+      logToTeacher(
         "Transceivers after offer:",
         transceivers.map((t, i) => `[${i}] ${t.receiver.track?.kind} dir=${t.direction} mid=${t.mid}`).join(", ")
       );
@@ -288,16 +302,16 @@
           micTrack = stream.getAudioTracks()[0];
           micTrack.enabled = false; // muted until the student taps the button
           await micTransceiver.sender.replaceTrack(micTrack);
-          console.log("Mic pre-attached (muted). mid:", micTransceiver.mid);
+          logToTeacher("Mic pre-attached (muted). mid:", micTransceiver.mid);
         } catch (e) {
-          console.warn("Mic permission not granted at join time — mic feature unavailable this session.", e);
+          logToTeacher("Mic permission not granted at join time — mic feature unavailable this session.", e);
           micTransceiver = null;
         }
       } else if (micTransceiver && micTrack) {
         // Rejoining/renegotiated: re-attach whatever mic track we already have.
         await micTransceiver.sender.replaceTrack(micTrack);
       } else {
-        console.warn("No reserved audio-return transceiver found — mic feature unavailable this session.");
+        logToTeacher("No reserved audio-return transceiver found — mic feature unavailable this session.");
       }
 
       const answer = await pc.createAnswer();
@@ -309,16 +323,16 @@
         .filter(l => l.startsWith("m=") || l.startsWith("a=sendrecv") ||
                      l.startsWith("a=sendonly") || l.startsWith("a=recvonly") ||
                      l.startsWith("a=inactive"));
-      console.log("Answer m-lines:", answerMLines.join(" | "));
+      logToTeacher("Answer m-lines:", answerMLines.join(" | "));
 
       socket.emit("answer", {
         targetId: teacherIdArg,
         roomId:   roomIdArg,
         sdp: { type: answer.type, sdp: answer.sdp },
       });
-      console.log("✅ Answer sent");
+      logToTeacher("✅ Answer sent");
     } catch (e) {
-      console.error("handleOffer failed", e);
+      logToTeacher("handleOffer failed", e);
       show(joinScreen);
       showError("Failed to connect. Please try again.");
     }
@@ -350,7 +364,7 @@
           setMicButtonState(true);
           return;
         } catch (e) {
-          console.error("Could not access microphone", e);
+          logToTeacher("Could not access microphone", e);
         }
       }
       const original = micBtn.textContent;

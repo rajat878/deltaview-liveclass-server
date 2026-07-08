@@ -105,6 +105,18 @@ io.on("connection", (socket) => {
     io.to(data.targetId).emit("ice-candidate", { ...data, senderId: socket.id });
   });
 
+  // ── Relay a student's browser console logs to the teacher's app, so
+  // they show up in Android Studio's Logcat directly — no chrome://inspect
+  // USB debugging needed for quick field debugging.
+  socket.on("client-log", ({ roomId, message }) => {
+    const room = rooms.get(roomId);
+    if (!room) return;
+    io.to(room.teacherSocketId).emit("client-log", {
+      studentId: socket.id,
+      message,
+    });
+  });
+
   // ── Teacher ends the room ───────────────────────────────────────────
   socket.on("end-room", ({ roomId }) => {
     console.log("end-room", roomId);
