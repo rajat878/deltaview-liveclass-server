@@ -35,6 +35,8 @@
   const fullscreenBtn = document.getElementById("fullscreen-btn");
   const rejoinBtn     = document.getElementById("rejoin-btn");
   const micBtn        = document.getElementById("mic-btn");
+  const raiseHandBtn  = document.getElementById("raise-hand-btn");
+  const statusBanner  = document.getElementById("status-banner");
 
   // ── Fail loudly (but not silently-dead) if the HTML and this script are
   // out of sync — e.g. an element was renamed/removed in one file but not
@@ -47,6 +49,7 @@
     joinScreen, waitingScreen, liveScreen, endedScreen,
     joinBtn, pinInput, nameInput, joinError,
     remoteVideo, fullscreenBtn, rejoinBtn, micBtn,
+    raiseHandBtn, statusBanner,
   };
   const missing = Object.entries(required)
     .filter(([, el]) => !el)
@@ -61,6 +64,30 @@
   let roomId       = null;
   let micTrack        = null; // local mic MediaStreamTrack, once permission is granted
   let micTransceiver   = null; // the reserved "send our mic to teacher" m-line for the current pc
+  let handRaised       = false; // has this student asked to speak?
+  let speakAllowed      = false; // has the teacher granted mic permission?
+  let bannerTimer       = null;
+
+  function showBanner(msg, kind) {
+    statusBanner.textContent = msg;
+    statusBanner.className = "show" + (kind ? " " + kind : "");
+    clearTimeout(bannerTimer);
+    bannerTimer = setTimeout(() => statusBanner.classList.remove("show"), 4000);
+  }
+
+  function setRaiseHandButtonState(raised) {
+    handRaised = raised;
+    raiseHandBtn.textContent = raised ? "✋ Hand raised" : "✋ Raise hand";
+    raiseHandBtn.classList.toggle("hand-active", raised);
+  }
+
+  function resetHandAndSpeakState() {
+    setRaiseHandButtonState(false);
+    speakAllowed = false;
+    setMicButtonState(false);
+    micBtn.disabled = true;
+    micBtn.textContent = "🔒 Mic locked";
+  }
 
   // ── Relay console logs to the teacher's app via the signaling server,
   // so they show up directly in Android Studio's Logcat (tag:LiveClassManager)
@@ -144,6 +171,7 @@
 
     if (socket) socket.disconnect();
 
+    resetHandAndSpeakState();
     show(waitingScreen);
 
     const waitingSubtitle = waitingScreen.querySelector(".subtitle");
@@ -202,6 +230,30 @@
       logToTeacher("❌ Room ended by teacher");
       cleanupPeerConnection();
       show(endedScreen);
+    });
+
+    // ── Teacher granted this student permission to speak. Unlock the mic
+    // button (still starts muted — the student must tap it themselves) and
+    // clear the raised-hand indicator since the request has been answered.
+    socket.on("speak-allowed", () => {
+      logToTeacher("🎤 Teacher allowed you to speak");
+      speakAllowed = true;
+      micBtn.disabled = false;
+      setMicButtonState(false);
+      setRaiseHandButtonState(false);
+      showBanner("🎤 The teacher allowed you to speak — tap the mic to unmute.", "granted");
+    });
+
+    // ── Teacher revoked mic permission (or it was never granted). Force the
+    // mic off immediately and lock the button again.
+    socket.on("speak-muted", () => {
+      logToTeacher("🔇 Teacher turned off your mic access");
+      speakAllowed = false;
+      if (micTrack) micTrack.enabled = false;
+      setMicButtonState(false);
+      micBtn.disabled = true;
+      micBtn.textContent = "🔒 Mic locked";
+      showBanner("🔇 The teacher turned off your mic access.", "revoked");
     });
 
     socket.on("offer", async (data) => {
@@ -354,7 +406,7 @@
     if (pc) { pc.close(); pc = null; }
     if (remoteVideo) { remoteVideo.pause(); remoteVideo.srcObject = null; }
     micTransceiver = null;
-    setMicButtonState(false);
+    resetHandAndSpeakState();
   }
 
   function setMicButtonState(on) {
@@ -363,6 +415,11 @@
   }
 
   async function toggleMic() {
+    if (!speakAllowed) {
+      showBanner("✋ Raise your hand and wait for the teacher to allow you to speak.");
+      return;
+    }
+
     if (!micTransceiver || !micTrack) {
       // Either the reserved line wasn't available, or mic permission was
       // denied when the student joined. Give them one more chance to grant
@@ -407,6 +464,21 @@
   });
 
   micBtn.addEventListener("click", toggleMic);
+
+  raiseHandBtn.addEventListener("click", () => {
+    if (!socket || !socket.connected || !roomId) return;
+    if (handRaised) {
+      socket.emit("lower-hand", { roomId });
+      setRaiseHandButtonState(false);
+    } else {
+      socket.emit("raise-hand", { roomId });
+      setRaiseHandButtonState(true);
+      showBanner("✋ Hand raised — waiting for the teacher.");
+    }
+  });
+
+  // Mic starts locked every page load until the teacher grants permission.
+  micBtn.disabled = true;
 
   fullscreenBtn.addEventListener("click", () => {
     if (remoteVideo.requestFullscreen) remoteVideo.requestFullscreen();

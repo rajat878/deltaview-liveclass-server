@@ -1,152 +1,213 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// DeltaView Live Class – Signaling Server  (Node.js + Socket.IO)
-// Now also serves the student web page at /join?room=ROOMCODE
-// ─────────────────────────────────────────────────────────────────────────────
-const { createServer } = require("http");
-const { Server }       = require("socket.io");
-const path             = require("path");
-const fs               = require("fs");
-const url              = require("url");
+const express = require("express");
+const http = require("http");
+const { Server } = require("socket.io");
+const cors = require("cors");
 
-const PORT = process.env.PORT || 3000;
+const app = express();
+app.use(cors());
 
-// ── Read the static files once at startup ────────────────────────────────────
-// Place index.html and student.js in a "public/" folder next to server.js
-const PUBLIC_DIR = path.join(__dirname, "public");
+const server = http.createServer(app);
 
-function serveStatic(res, filePath, contentType) {
-  try {
-    const data = fs.readFileSync(filePath);
-    res.writeHead(200, { "Content-Type": contentType });
-    res.end(data);
-  } catch {
-    res.writeHead(404);
-    res.end("Not found");
-  }
-}
-
-// ── HTTP server ───────────────────────────────────────────────────────────────
-const httpServer = createServer((req, res) => {
-  const parsed   = url.parse(req.url, true);
-  const pathname = parsed.pathname;
-
-  // Serve the student join page
-  if (pathname === "/" || pathname === "/join") {
-    serveStatic(res, path.join(PUBLIC_DIR, "index.html"), "text/html; charset=utf-8");
-    return;
-  }
-
-  // Serve student.js
-  if (pathname === "/student.js") {
-    serveStatic(res, path.join(PUBLIC_DIR, "student.js"), "application/javascript");
-    return;
-  }
-
-  // Socket.IO handles /socket.io/* automatically — don't intercept it
-  if (pathname.startsWith("/socket.io")) {
-    return; // let Socket.IO middleware handle it
-  }
-
-  res.writeHead(404);
-  res.end("Not found");
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
 });
 
-// ── Socket.IO ─────────────────────────────────────────────────────────────────
-const io = new Server(httpServer, {
-  cors: { origin: "*", methods: ["GET", "POST"] },
-});
+// In-memory room storage
+const rooms = {};
 
-// roomId → { teacherSocketId, students: Set<socketId> }
-const rooms = new Map();
+// Health check
+app.get("/", (req, res) => {
+  res.send("Live Class Signaling Server Running");
+});
 
 io.on("connection", (socket) => {
-  console.log("connect", socket.id);
+  console.log(`✅ Client connected: ${socket.id}`);
 
-  // ── Teacher creates a room ──────────────────────────────────────────
+  // ==========================
+  // Teacher creates a room
+  // ==========================
   socket.on("create-room", () => {
-    const roomId = Math.random().toString(36).slice(2, 8).toUpperCase();
-    rooms.set(roomId, { teacherSocketId: socket.id, students: new Set() });
+    const roomId = Math.random()
+      .toString(36)
+      .substring(2, 8)
+      .toUpperCase();
+
+rooms[roomId] = {
+  teacher: socket.id,
+  students: [],
+  raisedHands: new Set(),     // studentIds with hand currently raised
+  allowedSpeakers: new Set(), // studentIds the teacher has granted mic permission to
+};
+
     socket.join(roomId);
-    socket.emit("room-created", { roomId });
-    console.log("room-created", roomId);
+
+    console.log(`🏫 Room created: ${roomId}`);
+
+    socket.emit("room-created", {
+      roomId: roomId,
+    });
   });
 
-  // ── Student joins ───────────────────────────────────────────────────
-  socket.on("join-room", ({ roomId, name }) => {
-    const room = rooms.get(roomId);
+  // ==========================
+  // Student joins a room
+  // ==========================
+  socket.on("join-room", ({ roomId }) => {
+    const room = rooms[roomId];
+
     if (!room) {
-      socket.emit("join-error", { message: "Room not found. Check the code and try again." });
+      socket.emit("join-error", {
+        message: "Room not found",
+      });
       return;
     }
-    room.students.add(socket.id);
+
+    room.students.push(socket.id);
     socket.join(roomId);
-    socket.data.roomId      = roomId;
-    socket.data.displayName = name || "";
 
-    socket.emit("join-success", { roomId });
+    console.log(`👨‍🎓 Student ${socket.id} joined ${roomId}`);
 
-    io.to(room.teacherSocketId).emit("student-joined", {
-      studentId:   socket.id,
-      displayName: name || "",
+    // Notify student
+    socket.emit("join-success", {
+      roomId: roomId,
     });
-    console.log("student-joined", socket.id, "→ room", roomId);
-  });
 
-  // ── WebRTC signaling passthrough ────────────────────────────────────
-  socket.on("offer", (data) => {
-    io.to(data.targetId).emit("offer", { ...data, senderId: socket.id });
-  });
-
-  socket.on("answer", (data) => {
-    io.to(data.targetId).emit("answer", { ...data, senderId: socket.id });
-  });
-
-  socket.on("ice-candidate", (data) => {
-    io.to(data.targetId).emit("ice-candidate", { ...data, senderId: socket.id });
-  });
-
-  // ── Relay a student's browser console logs to the teacher's app, so
-  // they show up in Android Studio's Logcat directly — no chrome://inspect
-  // USB debugging needed for quick field debugging.
-  socket.on("client-log", ({ roomId, message }) => {
-    const room = rooms.get(roomId);
-    if (!room) return;
-    io.to(room.teacherSocketId).emit("client-log", {
+    // Notify teacher
+    io.to(room.teacher).emit("student-joined", {
       studentId: socket.id,
-      message,
     });
   });
 
-  // ── Teacher ends the room ───────────────────────────────────────────
-  socket.on("end-room", ({ roomId }) => {
-    console.log("end-room", roomId);
-    const room = rooms.get(roomId);
-    if (!room) return;
+// ==========================
+// Student raises / lowers hand
+// ==========================
+socket.on("raise-hand", ({ roomId }) => {
+  const room = rooms[roomId];
+  if (!room) return;
 
-    room.students.forEach((studentId) => {
-      io.to(studentId).emit("room-ended", {});
-    });
-    rooms.delete(roomId);
+  room.raisedHands.add(socket.id);
+
+  console.log(`✋ Hand raised: ${socket.id} (Room: ${roomId})`);
+
+  io.to(room.teacher).emit("hand-raised", { studentId: socket.id });
+});
+
+socket.on("lower-hand", ({ roomId }) => {
+  const room = rooms[roomId];
+  if (!room) return;
+
+  room.raisedHands.delete(socket.id);
+
+  console.log(`🖐️ Hand lowered: ${socket.id} (Room: ${roomId})`);
+
+  io.to(room.teacher).emit("hand-lowered", { studentId: socket.id });
+});
+
+// ==========================
+// Teacher grants / revokes mic permission
+// ==========================
+socket.on("allow-speak", ({ roomId, studentId }) => {
+  const room = rooms[roomId];
+  if (!room || socket.id !== room.teacher) return; // only the teacher may grant this
+
+  room.allowedSpeakers.add(studentId);
+  room.raisedHands.delete(studentId); // granting speech implicitly clears the raised hand
+
+  console.log(`🎤 Speak allowed: ${studentId} (Room: ${roomId})`);
+
+  io.to(studentId).emit("speak-allowed");
+});
+
+socket.on("mute-student", ({ roomId, studentId }) => {
+  const room = rooms[roomId];
+  if (!room || socket.id !== room.teacher) return; // only the teacher may revoke this
+
+  room.allowedSpeakers.delete(studentId);
+
+  console.log(`🔇 Speak revoked: ${studentId} (Room: ${roomId})`);
+
+  io.to(studentId).emit("speak-muted");
+});
+
+// ==========================
+// Relay WebRTC Offer
+// ==========================
+socket.on("offer", ({ targetId, roomId, sdp }) => {
+  console.log(
+    `📨 Offer: ${socket.id} -> ${targetId} (Room: ${roomId})`
+  );
+
+  io.to(targetId).emit("offer", {
+    senderId: socket.id,
+    roomId,
+    sdp,
   });
+});
 
-  // ── Cleanup on disconnect ───────────────────────────────────────────
+// Relay WebRTC Answer
+// ==========================
+socket.on("answer", ({ targetId, roomId, sdp }) => {
+  console.log(
+    `📨 Answer: ${socket.id} -> ${targetId} (Room: ${roomId})`
+  );
+
+  io.to(targetId).emit("answer", {
+    senderId: socket.id,
+    roomId,
+    sdp,
+  });
+});
+
+
+// ==========================
+// Relay ICE Candidate
+// ==========================
+socket.on("ice-candidate", ({ targetId, roomId, candidate }) => {
+  console.log(
+    `🧊 ICE Candidate: ${socket.id} -> ${targetId} (Room: ${roomId})`
+  );
+
+  io.to(targetId).emit("ice-candidate", {
+    senderId: socket.id,
+    roomId,
+    candidate,
+  });
+});
+
+  // ==========================
+  // Client disconnect
+  // ==========================
   socket.on("disconnect", () => {
-    console.log("disconnect", socket.id);
-    const roomId = socket.data.roomId;
-    if (!roomId) return;
-    const room = rooms.get(roomId);
-    if (!room) return;
+    console.log(`❌ Client disconnected: ${socket.id}`);
 
-    if (room.teacherSocketId === socket.id) {
-      room.students.forEach((sid) => io.to(sid).emit("room-ended", {}));
-      rooms.delete(roomId);
-    } else {
-      room.students.delete(socket.id);
-      io.to(room.teacherSocketId).emit("student-left", { studentId: socket.id });
+    // Clean up rooms
+    for (const roomId in rooms) {
+      const room = rooms[roomId];
+
+      // Teacher disconnected
+      if (room.teacher === socket.id) {
+        console.log(`🛑 Closing room ${roomId}`);
+
+        io.to(roomId).emit("room-ended");
+
+        delete rooms[roomId];
+        continue;
+      }
+
+      // Remove student
+      room.students = room.students.filter(
+        (studentId) => studentId !== socket.id
+      );
+      room.raisedHands.delete(socket.id);
+      room.allowedSpeakers.delete(socket.id);
     }
   });
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`Signaling server listening on port ${PORT}`);
+const PORT = 3000;
+
+server.listen(PORT, () => {
+  console.log(`🚀 Server started on http://localhost:${PORT}`);
 });
