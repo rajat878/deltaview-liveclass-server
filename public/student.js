@@ -142,10 +142,30 @@
 
     socket = io(getServerUrl(), { transports: ["websocket", "polling"] });
 
+    let hasJoinedOnce = false; // guards against the "two students" bug below
+
     socket.on("connect", () => {
       clearTimeout(slowConnectTimer);
       console.log("✅ Connected to signaling server");
-      socket.emit("join-room", { roomId, name: nameInput.value.trim() });
+
+      // BUG FIX: Socket.IO's "connect" event fires on every reconnect too,
+      // not just the first connection — including silent automatic
+      // reconnects after a brief network blip. Each reconnect gets a NEW
+      // socket.id, and the server uses socket.id as the student's identity.
+      // If we blindly re-emit "join-room" here every time, one real
+      // student who has a momentary Wi-Fi hiccup shows up as a SECOND
+      // student on the teacher's roster. Only auto-join on the very first
+      // connect; treat any later reconnect as "connection lost", matching
+      // the manual rejoin flow instead of silently duplicating the join.
+      if (!hasJoinedOnce) {
+        hasJoinedOnce = true;
+        socket.emit("join-room", { roomId, name: nameInput.value.trim() });
+      } else {
+        console.warn("Reconnected after a drop — not auto-rejoining to avoid a duplicate roster entry.");
+        cleanupPeerConnection();
+        show(joinScreen);
+        showError("Connection was lost. Please rejoin the class.");
+      }
     });
 
     socket.on("connect_error", (err) => {
@@ -243,15 +263,54 @@
         transceivers.map((t, i) => `[${i}] ${t.receiver.track?.kind} dir=${t.direction} mid=${t.mid}`).join(", ")
       );
       micTransceiver = transceivers[2] || null;
-      if (!micTransceiver) {
-        console.warn("No reserved audio-return transceiver found — mic feature unavailable this session.");
-      } else if (micTrack) {
+
+      // BUG FIX: previously we only requested the mic + attached it the
+      // FIRST time the student tapped "Mic on" — which happens well after
+      // this answer is created. With no track attached at answer-creation
+      // time, the browser negotiates this m-line as "a=inactive" instead
+      // of "a=sendonly" — meaning no RTP session is ever set up for it at
+      // all. Attaching a track afterward via replaceTrack() then does
+      // nothing, because the line was already sealed inactive in the
+      // original handshake. That's why the teacher never heard anything,
+      // with no errors anywhere.
+      //
+      // Fix: grab the mic now (before createAnswer), keep it muted
+      // (`enabled = false`) by default, and let the mic button just flip
+      // `.enabled` — no renegotiation needed either way. This does mean a
+      // mic-permission prompt appears as soon as the student joins, not
+      // when they first tap the button — an intentional trade-off for
+      // reliability. If permission is denied, we degrade gracefully:
+      // video/audio-from-teacher still works fine, only the student's own
+      // mic feature is unavailable for that session.
+      if (micTransceiver && !micTrack) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          micTrack = stream.getAudioTracks()[0];
+          micTrack.enabled = false; // muted until the student taps the button
+          await micTransceiver.sender.replaceTrack(micTrack);
+          console.log("Mic pre-attached (muted). mid:", micTransceiver.mid);
+        } catch (e) {
+          console.warn("Mic permission not granted at join time — mic feature unavailable this session.", e);
+          micTransceiver = null;
+        }
+      } else if (micTransceiver && micTrack) {
         // Rejoining/renegotiated: re-attach whatever mic track we already have.
         await micTransceiver.sender.replaceTrack(micTrack);
+      } else {
+        console.warn("No reserved audio-return transceiver found — mic feature unavailable this session.");
       }
 
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
+
+      // DEBUG: confirm the answer we're about to send actually negotiates
+      // the 3rd (mic-return) line as active, not "a=inactive".
+      const answerMLines = answer.sdp.split("\n")
+        .filter(l => l.startsWith("m=") || l.startsWith("a=sendrecv") ||
+                     l.startsWith("a=sendonly") || l.startsWith("a=recvonly") ||
+                     l.startsWith("a=inactive"));
+      console.log("Answer m-lines:", answerMLines.join(" | "));
+
       socket.emit("answer", {
         targetId: teacherIdArg,
         roomId:   roomIdArg,
@@ -278,40 +337,31 @@
   }
 
   async function toggleMic() {
-    if (!micTransceiver) {
-      console.warn("Mic toggled before connection was ready.");
+    if (!micTransceiver || !micTrack) {
+      // Either the reserved line wasn't available, or mic permission was
+      // denied when the student joined. Give them one more chance to grant
+      // it now, in case they said no by mistake the first time.
+      if (micTransceiver && !micTrack) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          micTrack = stream.getAudioTracks()[0];
+          micTrack.enabled = true;
+          await micTransceiver.sender.replaceTrack(micTrack);
+          setMicButtonState(true);
+          return;
+        } catch (e) {
+          console.error("Could not access microphone", e);
+        }
+      }
+      const original = micBtn.textContent;
+      micBtn.textContent = "⚠️ Mic unavailable";
+      setTimeout(() => { micBtn.textContent = original; }, 2500);
       return;
     }
 
-    const turningOn = !(micTrack && micTrack.enabled);
-
-    if (turningOn) {
-      try {
-        if (!micTrack) {
-          // First time enabling this session — ask for the mic permission
-          // and attach it. replaceTrack() on an already-negotiated m-line
-          // does NOT require a renegotiation round trip.
-          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-          micTrack = stream.getAudioTracks()[0];
-          await micTransceiver.sender.replaceTrack(micTrack);
-          console.log(
-            "Mic track attached. transceiver direction:", micTransceiver.direction,
-            "mid:", micTransceiver.mid,
-            "track readyState:", micTrack.readyState
-          );
-        }
-        micTrack.enabled = true;
-        setMicButtonState(true);
-      } catch (e) {
-        console.error("Could not access microphone", e);
-        const original = micBtn.textContent;
-        micBtn.textContent = "⚠️ Mic blocked";
-        setTimeout(() => { micBtn.textContent = original; }, 2500);
-      }
-    } else {
-      micTrack.enabled = false;
-      setMicButtonState(false);
-    }
+    const turningOn = !micTrack.enabled;
+    micTrack.enabled = turningOn;
+    setMicButtonState(turningOn);
   }
 
   // ── Auto-fill room code from URL ?room=ROOMCODE ───────────────────────
