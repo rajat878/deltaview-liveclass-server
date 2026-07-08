@@ -37,6 +37,7 @@
   const micBtn        = document.getElementById("mic-btn");
   const raiseHandBtn  = document.getElementById("raise-hand-btn");
   const statusBanner  = document.getElementById("status-banner");
+  const channelReadout = document.getElementById("channel-readout"); // optional; decorative only
 
   // ── Fail loudly (but not silently-dead) if the HTML and this script are
   // out of sync — e.g. an element was renamed/removed in one file but not
@@ -170,6 +171,8 @@
     }
 
     if (socket) socket.disconnect();
+
+    if (channelReadout) channelReadout.textContent = "CH · " + roomId;
 
     resetHandAndSpeakState();
     show(waitingScreen);

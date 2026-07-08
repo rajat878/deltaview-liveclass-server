@@ -4,99 +4,311 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>DeltaView Live Class</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
   <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-           background: #0f172a; color: #f1f5f9; min-height: 100vh;
-           display: flex; align-items: center; justify-content: center; }
-    .screen { width: 100%; display: flex; align-items: center; justify-content: center; }
-    .hidden { display: none !important; }
-    .card { background: #1e293b; border-radius: 16px; padding: 36px 28px;
-            max-width: 400px; width: 90%; text-align: center; box-shadow: 0 20px 60px rgba(0,0,0,.5); }
-    .logo { font-size: 2rem; font-weight: 800; color: #6366f1; margin-bottom: 8px; }
-    h1 { font-size: 1.3rem; margin-bottom: 6px; }
-    h2 { font-size: 1.2rem; margin-bottom: 8px; }
-    .subtitle { color: #94a3b8; font-size: .9rem; margin-bottom: 24px; }
-    input { width: 100%; padding: 12px 16px; margin-bottom: 12px; border-radius: 10px;
-            border: 1.5px solid #334155; background: #0f172a; color: #f1f5f9;
-            font-size: 1.1rem; text-align: center; letter-spacing: 3px; outline: none; }
-    input:focus { border-color: #6366f1; }
-    input#name-input { letter-spacing: normal; font-size: .95rem; }
-    button { width: 100%; padding: 13px; border-radius: 10px; border: none;
-             background: #6366f1; color: #fff; font-size: 1rem; font-weight: 600;
-             cursor: pointer; transition: background .2s; }
-    button:hover { background: #4f46e5; }
-    .error { color: #f87171; font-size: .88rem; margin-top: 10px; }
-    .spinner { width: 48px; height: 48px; border: 4px solid #334155;
-               border-top-color: #6366f1; border-radius: 50%;
-               animation: spin 1s linear infinite; margin: 0 auto 20px; }
-    @keyframes spin { to { transform: rotate(360deg); } }
-    #live-screen { flex-direction: column; padding: 0; background: #000;
-                   min-height: 100vh; align-items: stretch; }
-    .live-bar { display: flex; align-items: center; gap: 8px; padding: 8px 14px;
-                background: rgba(0,0,0,.6); position: fixed; top: 0; left: 0; right: 0; z-index: 10; }
-    .live-dot { width: 10px; height: 10px; border-radius: 50%; background: #ef4444;
-                animation: pulse 1.2s ease-in-out infinite; }
-    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-    .spacer { flex: 1; }
-    .live-bar button { width: auto; padding: 6px 14px; font-size: .8rem; background: #334155; }
-    #mic-btn.mic-on { background: #16a34a; }
-    #mic-btn:disabled { background: #334155; color: #64748b; cursor: not-allowed; }
-    #raise-hand-btn.hand-active { background: #f59e0b; color: #1e293b; }
-    #remote-video { width: 100%; height: 100vh; object-fit: contain; display: block; }
-    #status-banner { position: fixed; top: 44px; left: 0; right: 0; z-index: 9;
-                      text-align: center; font-size: .85rem; padding: 8px 12px;
-                      transform: translateY(-120%); transition: transform .25s ease;
-                      background: #334155; color: #f1f5f9; }
-    #status-banner.show { transform: translateY(0); }
-    #status-banner.granted { background: #16a34a; }
-    #status-banner.revoked { background: #7f1d1d; }
+    :root{
+      --ink:#0A0E17;
+      --panel:#141A2A;
+      --console:#1B2338;
+      --line:#28304A;
+      --paper:#EDEFF5;
+      --fog:#8891AA;
+      --gold:#F2B134;
+      --red:#FF4757;
+      --green:#2ED573;
+      --font-display:'Space Grotesk',system-ui,sans-serif;
+      --font-body:'Inter',system-ui,sans-serif;
+      --font-mono:'JetBrains Mono',ui-monospace,monospace;
+      --safe-t:env(safe-area-inset-top,0px);
+      --safe-b:env(safe-area-inset-bottom,0px);
+    }
+    *{box-sizing:border-box;margin:0;padding:0;}
+    html,body{height:100%;}
+    body{
+      font-family:var(--font-body);
+      background:var(--ink);
+      color:var(--paper);
+      min-height:100vh;
+      display:flex;align-items:center;justify-content:center;
+      -webkit-font-smoothing:antialiased;
+      position:relative;
+      overflow-x:hidden;
+    }
+    /* faint broadcast grain/scanline texture, kept very subtle */
+    body::before{
+      content:"";
+      position:fixed;inset:0;pointer-events:none;z-index:0;
+      background-image:repeating-linear-gradient(0deg,rgba(255,255,255,.015) 0px,rgba(255,255,255,.015) 1px,transparent 1px,transparent 3px);
+      mix-blend-mode:overlay;
+    }
+    a,button,input{font-family:inherit;}
+    .screen{width:100%;display:flex;align-items:center;justify-content:center;position:relative;z-index:1;padding:24px;}
+    .hidden{display:none !important;}
+
+    /* ── Card (join / waiting / ended) ───────────────────────────── */
+    .card{
+      background:var(--panel);
+      border:1px solid var(--line);
+      border-radius:18px;
+      padding:40px 30px 32px;
+      max-width:400px;width:100%;
+      text-align:center;
+      box-shadow:0 24px 60px rgba(0,0,0,.45);
+    }
+    .eyebrow{
+      font-family:var(--font-mono);
+      font-size:.72rem;
+      font-weight:600;
+      letter-spacing:.18em;
+      text-transform:uppercase;
+      color:var(--gold);
+      display:inline-flex;align-items:center;gap:8px;
+      margin-bottom:18px;
+    }
+    .eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--gold);}
+    h1{
+      font-family:var(--font-display);
+      font-weight:700;
+      font-size:2rem;
+      line-height:1.1;
+      letter-spacing:-.01em;
+      margin-bottom:10px;
+    }
+    h2{font-family:var(--font-display);font-weight:700;font-size:1.5rem;margin-bottom:8px;}
+    .subtitle{color:var(--fog);font-size:.92rem;line-height:1.5;margin-bottom:28px;}
+
+    input{
+      width:100%;padding:15px 16px;margin-bottom:12px;
+      border-radius:12px;border:1.5px solid var(--line);
+      background:var(--ink);color:var(--paper);
+      font-size:1rem;outline:none;
+      transition:border-color .15s, box-shadow .15s;
+    }
+    input::placeholder{color:#4B5573;}
+    input:focus{border-color:var(--gold);box-shadow:0 0 0 3px rgba(242,177,52,.15);}
+    #pin-input{
+      font-family:var(--font-mono);
+      font-weight:600;
+      font-size:1.3rem;
+      text-align:center;
+      letter-spacing:.4em;
+      text-transform:uppercase;
+      padding-left:20px; /* optical centering vs. the wide letter-spacing */
+    }
+    #name-input{font-size:.95rem;text-align:left;}
+
+    button{
+      width:100%;padding:15px;border-radius:12px;border:none;
+      font-family:var(--font-body);font-size:.98rem;font-weight:600;
+      cursor:pointer;color:var(--paper);
+      background:var(--gold);color:#1A1204;
+      transition:transform .08s ease, filter .15s ease;
+    }
+    button:hover{filter:brightness(1.08);}
+    button:active{transform:translateY(1px) scale(.99);}
+    #join-btn::after{content:"  \25B8";}
+
+    .error{
+      color:var(--red);font-size:.85rem;margin-top:14px;
+      font-family:var(--font-mono);
+    }
+
+    /* ── Tuning indicator (waiting screen) ───────────────────────── */
+    .tuner{display:flex;align-items:flex-end;justify-content:center;gap:5px;height:44px;margin:0 auto 22px;}
+    .tuner span{
+      width:6px;border-radius:3px;background:var(--gold);
+      animation:tune 1.1s ease-in-out infinite;
+    }
+    .tuner span:nth-child(1){height:14px;animation-delay:0s;}
+    .tuner span:nth-child(2){height:30px;animation-delay:.12s;}
+    .tuner span:nth-child(3){height:44px;animation-delay:.24s;}
+    .tuner span:nth-child(4){height:22px;animation-delay:.36s;}
+    .tuner span:nth-child(5){height:34px;animation-delay:.48s;}
+    @keyframes tune{0%,100%{transform:scaleY(.35);opacity:.55;}50%{transform:scaleY(1);opacity:1;}}
+
+    /* ── Live screen ──────────────────────────────────────────────── */
+    #live-screen{
+      flex-direction:column;padding:0;background:#000;
+      min-height:100vh;align-items:stretch;
+    }
+    .onair-bar{
+      display:flex;align-items:center;gap:12px;
+      padding:calc(10px + var(--safe-t)) 14px 10px;
+      background:linear-gradient(180deg,rgba(10,14,23,.92),rgba(10,14,23,.55) 80%,transparent);
+      position:fixed;top:0;left:0;right:0;z-index:10;
+    }
+    .onair-sign{
+      display:inline-flex;align-items:center;gap:7px;
+      padding:5px 10px;border-radius:7px;
+      border:1px solid rgba(255,71,87,.5);
+      background:rgba(255,71,87,.12);
+      font-family:var(--font-display);font-weight:700;
+      font-size:.72rem;letter-spacing:.09em;
+      color:#FF8590;
+      animation:flicker-in .9s ease-out;
+    }
+    .onair-sign .dot{
+      width:7px;height:7px;border-radius:50%;background:var(--red);
+      box-shadow:0 0 8px var(--red);
+      animation:pulse 1.3s ease-in-out infinite;
+    }
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.35}}
+    @keyframes flicker-in{
+      0%{opacity:0;}12%{opacity:1;}18%{opacity:.2;}26%{opacity:1;}32%{opacity:.4;}40%{opacity:1;}100%{opacity:1;}
+    }
+    #channel-readout{
+      font-family:var(--font-mono);font-size:.72rem;color:var(--fog);
+      letter-spacing:.06em;
+    }
+    .bar-spacer{flex:1;}
+    .icon-btn{
+      width:34px;height:34px;border-radius:9px;flex:none;
+      background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);
+      color:var(--paper);font-size:1rem;display:flex;align-items:center;justify-content:center;padding:0;
+    }
+    .icon-btn:hover{background:rgba(255,255,255,.15);}
+
+    #status-banner{
+      position:fixed;top:calc(52px + var(--safe-t));left:12px;right:12px;z-index:9;
+      text-align:center;font-size:.82rem;padding:10px 14px;border-radius:10px;
+      transform:translateY(-140%);opacity:0;transition:transform .25s ease, opacity .25s ease;
+      background:var(--console);color:var(--paper);border:1px solid var(--line);
+      font-family:var(--font-body);font-weight:500;
+    }
+    #status-banner.show{transform:translateY(0);opacity:1;}
+    #status-banner.granted{background:rgba(46,213,115,.16);border-color:rgba(46,213,115,.4);color:#8CF0B6;}
+    #status-banner.revoked{background:rgba(255,71,87,.16);border-color:rgba(255,71,87,.4);color:#FF9AA2;}
+
+    #remote-video{width:100%;height:100vh;object-fit:contain;display:block;background:#000;}
+
+    /* ── Console strip (bottom, thumb-reach controls) ────────────── */
+    .console-wrap{
+      position:fixed;bottom:0;left:0;right:0;z-index:10;
+      padding:10px 14px calc(12px + var(--safe-b));
+      background:linear-gradient(0deg,rgba(10,14,23,.94),rgba(10,14,23,.6) 75%,transparent);
+    }
+    .console-label{
+      font-family:var(--font-mono);font-size:.62rem;letter-spacing:.14em;
+      text-transform:uppercase;color:var(--fog);text-align:center;margin-bottom:8px;
+    }
+    .console{
+      display:flex;gap:10px;align-items:stretch;
+    }
+    .console button{
+      flex:1;padding:14px 8px;border-radius:13px;
+      background:var(--console);
+      border:1px solid var(--line);
+      color:var(--paper);font-weight:600;font-size:.86rem;
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.06), 0 3px 0 rgba(0,0,0,.35);
+      position:relative;
+      display:flex;flex-direction:column;align-items:center;gap:4px;
+    }
+    .console button .ic{font-size:1.25rem;}
+    .console button:active{
+      transform:translateY(2px);
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.06), 0 1px 0 rgba(0,0,0,.35);
+    }
+
+    #raise-hand-btn.hand-active{
+      background:rgba(242,177,52,.16);border-color:rgba(242,177,52,.55);color:var(--gold);
+    }
+    #raise-hand-btn.hand-active::before{
+      content:"";position:absolute;inset:-4px;border-radius:16px;
+      border:1.5px solid rgba(242,177,52,.5);
+      animation:ring 1.6s ease-out infinite;
+    }
+    @keyframes ring{0%{transform:scale(.94);opacity:.9;}100%{transform:scale(1.08);opacity:0;}}
+
+    #mic-btn{flex:1.3;}
+    #mic-btn:disabled{background:var(--panel);color:#4B5573;box-shadow:none;}
+    #mic-btn.mic-on{
+      background:rgba(46,213,115,.16);border-color:rgba(46,213,115,.55);color:var(--green);
+    }
+    #mic-btn.mic-on .ic::after{
+      content:"";display:inline-block;
+    }
+    /* animated mini equalizer bars, purely via generated content so textContent
+       swaps in JS never wipe them out */
+    #mic-btn.mic-on::after{
+      content:"";position:absolute;top:9px;right:12px;
+      width:3px;height:8px;background:var(--green);border-radius:2px;
+      box-shadow:6px 0 0 var(--green), 12px 0 0 var(--green);
+      animation:eq 0.9s ease-in-out infinite;
+    }
+    @keyframes eq{0%,100%{height:6px;top:11px;}50%{height:14px;top:3px;}}
+
+    /* ── Ended screen ─────────────────────────────────────────────── */
+    .offair-sign{
+      display:inline-flex;align-items:center;gap:8px;
+      padding:6px 12px;border-radius:8px;
+      border:1px solid var(--line);background:var(--console);
+      font-family:var(--font-display);font-weight:700;font-size:.78rem;
+      letter-spacing:.09em;color:var(--fog);margin-bottom:18px;
+    }
+    .offair-sign .dot{width:7px;height:7px;border-radius:50%;background:var(--fog);}
+
+    @media (max-width:380px){
+      h1{font-size:1.7rem;}
+      .console button{font-size:.78rem;padding:12px 6px;}
+    }
+
+    @media (prefers-reduced-motion:reduce){
+      *{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important;}
+    }
+
+    button:focus-visible, input:focus-visible{outline:2px solid var(--gold);outline-offset:2px;}
   </style>
 </head>
 <body>
 
 <div id="join-screen" class="screen">
   <div class="card">
-    <div class="logo">📡 Live</div>
-    <h1>DeltaView Live Class</h1>
-    <p class="subtitle">Enter the room code shown on your teacher's screen</p>
-    <!-- FIX: maxlength=6 to match the 6-char room code the server generates -->
-    <input id="pin-input" type="text" maxlength="6" placeholder="ROOM CODE"
-           autocomplete="off" style="text-transform:uppercase" />
+    <span class="eyebrow"><span class="dot"></span>Student Channel</span>
+    <h1>Tune In</h1>
+    <p class="subtitle">Enter the channel code shown on your teacher's screen to join the class.</p>
+    <input id="pin-input" type="text" maxlength="6" placeholder="CODE"
+           autocomplete="off" inputmode="text" />
     <input id="name-input" type="text" maxlength="24" placeholder="Your name (optional)"
            autocomplete="off" />
-    <button id="join-btn">Join Class</button>
+    <button id="join-btn">Join class</button>
     <p id="join-error" class="error hidden"></p>
   </div>
 </div>
 
 <div id="waiting-screen" class="screen hidden">
   <div class="card">
-    <div class="spinner"></div>
-    <h2>Connecting…</h2>
-    <p class="subtitle">Waiting for teacher's screen — please wait</p>
+    <div class="tuner"><span></span><span></span><span></span><span></span><span></span></div>
+    <h2>Tuning in…</h2>
+    <p class="subtitle">Waiting for your teacher's broadcast to start.</p>
   </div>
 </div>
 
 <div id="live-screen" class="screen hidden">
-  <div class="live-bar">
-    <span class="live-dot"></span>
-    <span>LIVE</span>
-    <span class="spacer"></span>
-    <button id="raise-hand-btn">✋ Raise hand</button>
-    <button id="mic-btn" disabled>🔒 Mic locked</button>
-    <button id="fullscreen-btn">⛶ Fullscreen</button>
+  <div class="onair-bar">
+    <span class="onair-sign"><span class="dot"></span>On air</span>
+    <span id="channel-readout"></span>
+    <span class="bar-spacer"></span>
+    <button id="fullscreen-btn" class="icon-btn" aria-label="Fullscreen">⛶</button>
   </div>
   <div id="status-banner"></div>
   <video id="remote-video" autoplay playsinline></video>
+  <div class="console-wrap">
+    <div class="console-label">Studio console</div>
+    <div class="console">
+      <button id="raise-hand-btn"><span class="ic">✋</span>Raise hand</button>
+      <button id="mic-btn" disabled><span class="ic">🔒</span>Mic locked</button>
+    </div>
+  </div>
 </div>
 
 <div id="ended-screen" class="screen hidden">
   <div class="card">
-    <div class="logo">🔴 Ended</div>
-    <h2>Session Ended</h2>
-    <p class="subtitle">The teacher has ended this live class.</p>
-    <button id="rejoin-btn">Join Again</button>
+    <span class="offair-sign"><span class="dot"></span>Off air</span>
+    <h2>Broadcast ended</h2>
+    <p class="subtitle">Your teacher ended this live class.</p>
+    <button id="rejoin-btn">Join again</button>
   </div>
 </div>
 
