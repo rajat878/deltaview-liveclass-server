@@ -302,7 +302,18 @@
           micTrack = stream.getAudioTracks()[0];
           micTrack.enabled = false; // muted until the student taps the button
           await micTransceiver.sender.replaceTrack(micTrack);
-          logToTeacher("Mic pre-attached (muted). mid:", micTransceiver.mid);
+          // replaceTrack() ONLY swaps which track the sender uses — it does
+          // NOT change the transceiver's negotiated direction. Any
+          // transceiver created while processing an incoming offer defaults
+          // to "recvonly" regardless of what the offer said, and stays that
+          // way until explicitly changed. Without this line, createAnswer()
+          // still sees "recvonly" on our side for this m-line, which
+          // combines with the teacher's "recvonly" (they only want to
+          // receive here) into "inactive" — nothing can flow either way.
+          // This was the actual root cause of the teacher never hearing
+          // students, even after pre-attaching the track.
+          micTransceiver.direction = "sendonly";
+          logToTeacher("Mic pre-attached (muted). mid:", micTransceiver.mid, "direction now:", micTransceiver.direction);
         } catch (e) {
           logToTeacher("Mic permission not granted at join time — mic feature unavailable this session.", e);
           micTransceiver = null;
@@ -310,6 +321,7 @@
       } else if (micTransceiver && micTrack) {
         // Rejoining/renegotiated: re-attach whatever mic track we already have.
         await micTransceiver.sender.replaceTrack(micTrack);
+        micTransceiver.direction = "sendonly";
       } else {
         logToTeacher("No reserved audio-return transceiver found — mic feature unavailable this session.");
       }
@@ -361,6 +373,7 @@
           micTrack = stream.getAudioTracks()[0];
           micTrack.enabled = true;
           await micTransceiver.sender.replaceTrack(micTrack);
+          micTransceiver.direction = "sendonly";
           setMicButtonState(true);
           return;
         } catch (e) {
