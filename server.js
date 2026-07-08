@@ -1,5 +1,6 @@
 const express = require("express");
 const http = require("http");
+const path = require("path");
 const { Server } = require("socket.io");
 const cors = require("cors");
 
@@ -18,8 +19,18 @@ const io = new Server(server, {
 // In-memory room storage
 const rooms = {};
 
-// Health check
-app.get("/", (req, res) => {
+// Serve the student join page (index.html, student.js, and the socket.io
+// client script) from the public/ folder. This MUST be registered before
+// the "/" health-check route below — Express matches routes in the order
+// they're added, so if the health check ran first it would intercept every
+// request to "/" and the actual join page would never be reached (which is
+// exactly why students were only ever seeing the plain health-check text).
+app.use(express.static(path.join(__dirname, "public")));
+
+// Health check (kept for uptime monitors / Render's own health probes).
+// Static files are matched first, so this only fires for paths that don't
+// match a file in public/ (e.g. Render pinging some other route).
+app.get("/health", (req, res) => {
   res.send("Live Class Signaling Server Running");
 });
 
