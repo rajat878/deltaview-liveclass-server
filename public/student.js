@@ -238,6 +238,10 @@
       // our mic track to its sender — no extra offer/answer round trip
       // needed since the m-line already exists in this very answer.
       const transceivers = pc.getTransceivers();
+      console.log(
+        "Transceivers after offer:",
+        transceivers.map((t, i) => `[${i}] ${t.receiver.track?.kind} dir=${t.direction} mid=${t.mid}`).join(", ")
+      );
       micTransceiver = transceivers[2] || null;
       if (!micTransceiver) {
         console.warn("No reserved audio-return transceiver found — mic feature unavailable this session.");
@@ -290,6 +294,11 @@
           const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
           micTrack = stream.getAudioTracks()[0];
           await micTransceiver.sender.replaceTrack(micTrack);
+          console.log(
+            "Mic track attached. transceiver direction:", micTransceiver.direction,
+            "mid:", micTransceiver.mid,
+            "track readyState:", micTrack.readyState
+          );
         }
         micTrack.enabled = true;
         setMicButtonState(true);
