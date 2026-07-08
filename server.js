@@ -65,7 +65,7 @@ rooms[roomId] = {
   // ==========================
   // Student joins a room
   // ==========================
-  socket.on("join-room", ({ roomId }) => {
+  socket.on("join-room", ({ roomId, name }) => {
     const room = rooms[roomId];
 
     if (!room) {
@@ -75,19 +75,26 @@ rooms[roomId] = {
       return;
     }
 
+    // Remember the name the student typed so it survives for the life of
+    // the room (useful if we ever need to look it up again later).
+    const displayName = typeof name === "string" && name.trim() ? name.trim() : null;
     room.students.push(socket.id);
+    room.studentNames = room.studentNames || {};
+    room.studentNames[socket.id] = displayName;
     socket.join(roomId);
 
-    console.log(`👨‍🎓 Student ${socket.id} joined ${roomId}`);
+    console.log(`👨‍🎓 Student ${socket.id} (${displayName || "no name given"}) joined ${roomId}`);
 
     // Notify student
     socket.emit("join-success", {
       roomId: roomId,
     });
 
-    // Notify teacher
+    // Notify teacher — this is what the Android app reads to show the
+    // student's real name instead of falling back to "Student N".
     io.to(room.teacher).emit("student-joined", {
       studentId: socket.id,
+      displayName: displayName,
     });
   });
 
@@ -213,6 +220,7 @@ socket.on("ice-candidate", ({ targetId, roomId, candidate }) => {
       );
       room.raisedHands.delete(socket.id);
       room.allowedSpeakers.delete(socket.id);
+      if (room.studentNames) delete room.studentNames[socket.id];
     }
   });
 });
