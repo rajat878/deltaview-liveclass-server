@@ -3,9 +3,12 @@ const http = require("http");
 const path = require("path");
 const { Server } = require("socket.io");
 const cors = require("cors");
+const { v4: uuidv4 } = require("uuid");
+const db = require("./db");
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 
 const server = http.createServer(app);
 
@@ -39,6 +42,50 @@ app.get("/health", (req, res) => {
   res.send("Live Class Signaling Server Running");
 });
 
+// ==========================
+// Roster REST API — teacher builds this list once (e.g. from a settings
+// screen) and it's reused across every future session, independent of any
+// single room/PIN.
+// ==========================
+
+// List all students in the roster.
+app.get("/api/roster", (req, res) => {
+  res.json(db.getRoster());
+});
+
+// Add (or rename, if the code already exists) a student.
+app.post("/api/roster", (req, res) => {
+  const { code, name } = req.body || {};
+  const cleanCode = typeof code === "string" ? code.trim() : "";
+  const cleanName = typeof name === "string" ? name.trim() : "";
+  if (!cleanCode || !cleanName) {
+    return res.status(400).json({ error: "Both code and name are required" });
+  }
+  const student = db.addStudent(cleanCode, cleanName);
+  res.status(201).json(student);
+});
+
+// Remove a student from the roster.
+app.delete("/api/roster/:code", (req, res) => {
+  const removed = db.removeStudent(req.params.code);
+  if (!removed) return res.status(404).json({ error: "Student code not found" });
+  res.json({ ok: true });
+});
+
+// ==========================
+// Attendance REST API
+// ==========================
+
+// List past + in-progress sessions with a quick attendee count, newest first.
+app.get("/api/sessions", (req, res) => {
+  res.json(db.listSessions());
+});
+
+// Full per-student attendance detail for one session.
+app.get("/api/sessions/:sessionId/attendance", (req, res) => {
+  res.json(db.getSessionAttendance(req.params.sessionId));
+});
+
 io.on("connection", (socket) => {
   console.log(`✅ Client connected: ${socket.id}`);
 
@@ -51,27 +98,34 @@ io.on("connection", (socket) => {
       .substring(2, 8)
       .toUpperCase();
 
+    const sessionId = uuidv4();
+
 rooms[roomId] = {
   teacher: socket.id,
+  sessionId,                  // ties this room's lifetime to one persisted attendance session
   students: [],
+  attendanceRows: {},          // studentId (socket.id) -> attendance row id, so disconnect can close it out
   raisedHands: new Set(),     // studentIds with hand currently raised
   allowedSpeakers: new Set(), // studentIds the teacher has granted mic permission to
   chatHistory: [],            // rolling log of { id, senderId, senderName, role, text, ts }, capped at CHAT_HISTORY_LIMIT
 };
 
+    db.startSession(sessionId, roomId);
+
     socket.join(roomId);
 
-    console.log(`🏫 Room created: ${roomId}`);
+    console.log(`🏫 Room created: ${roomId} (session ${sessionId})`);
 
     socket.emit("room-created", {
       roomId: roomId,
+      sessionId: sessionId,
     });
   });
 
   // ==========================
   // Student joins a room
   // ==========================
-  socket.on("join-room", ({ roomId, name }) => {
+  socket.on("join-room", ({ roomId, name, studentCode }) => {
     const room = rooms[roomId];
 
     if (!room) {
@@ -81,28 +135,55 @@ rooms[roomId] = {
       return;
     }
 
-    // Remember the name the student typed so it survives for the life of
-    // the room (useful if we ever need to look it up again later).
-    const displayName = typeof name === "string" && name.trim() ? name.trim() : null;
+    // A student code (issued once by the teacher and re-entered every
+    // class) is how we recognize "the same student" across sessions —
+    // free-text names alone can't be trusted for that. If the code matches
+    // the roster, the roster's saved name wins over whatever was typed, so
+    // attendance records stay consistent even if a student fat-fingers their
+    // name one day.
+    const cleanCode = typeof studentCode === "string" && studentCode.trim() ? studentCode.trim() : null;
+    const rosterMatch = cleanCode ? db.findStudentByCode(cleanCode) : null;
+
+    const typedName = typeof name === "string" && name.trim() ? name.trim() : null;
+    const displayName = rosterMatch ? rosterMatch.name : typedName;
+
     room.students.push(socket.id);
     room.studentNames = room.studentNames || {};
     room.studentNames[socket.id] = displayName;
     socket.join(roomId);
 
-    console.log(`👨‍🎓 Student ${socket.id} (${displayName || "no name given"}) joined ${roomId}`);
+    // Record attendance immediately — join time is the whole point of this
+    // feature, so it's written on join rather than batched at session end.
+    const attendanceRowId = db.recordJoin({
+      sessionId: room.sessionId,
+      roomId,
+      studentCode: rosterMatch ? rosterMatch.code : null,
+      studentName: displayName || "Unnamed student",
+    });
+    room.attendanceRows[socket.id] = attendanceRowId;
+
+    console.log(
+      `👨‍🎓 Student ${socket.id} (${displayName || "no name given"}) joined ${roomId}` +
+        (cleanCode ? (rosterMatch ? ` [roster: ${rosterMatch.code}]` : ` [unrecognized code: ${cleanCode}]`) : "")
+    );
 
     // Notify student — include the recent chat log so joining mid-class
-    // doesn't drop them into a conversation with zero context.
+    // doesn't drop them into a conversation with zero context. Also tell
+    // them whether their code matched, so the app can nudge them to check
+    // it if not (rather than silently attending as "unrecognized").
     socket.emit("join-success", {
       roomId: roomId,
       chatHistory: room.chatHistory || [],
+      rosterMatched: !!rosterMatch,
     });
 
     // Notify teacher — this is what the Android app reads to show the
-    // student's real name instead of falling back to "Student N".
+    // student's real name instead of falling back to "Student N", and
+    // whether that name came from a verified roster code.
     io.to(room.teacher).emit("student-joined", {
       studentId: socket.id,
       displayName: displayName,
+      rosterMatched: !!rosterMatch,
     });
   });
 
@@ -281,6 +362,12 @@ socket.on("ice-candidate", ({ targetId, roomId, candidate }) => {
 
         io.to(roomId).emit("room-ended");
 
+        // Anyone still "joined" at this instant never got their own
+        // disconnect event fired — close their attendance rows here so no
+        // session ends with a student stuck at left_at = null.
+        db.closeOpenAttendanceForSession(room.sessionId);
+        db.endSession(room.sessionId);
+
         delete rooms[roomId];
         continue;
       }
@@ -292,6 +379,12 @@ socket.on("ice-candidate", ({ targetId, roomId, candidate }) => {
       room.raisedHands.delete(socket.id);
       room.allowedSpeakers.delete(socket.id);
       if (room.studentNames) delete room.studentNames[socket.id];
+
+      const attendanceRowId = room.attendanceRows && room.attendanceRows[socket.id];
+      if (attendanceRowId) {
+        db.recordLeave(attendanceRowId);
+        delete room.attendanceRows[socket.id];
+      }
     }
   });
 });
