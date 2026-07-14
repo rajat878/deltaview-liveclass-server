@@ -299,6 +299,19 @@
     }
     .chat-msg.mine .chat-sender{text-align:right;}
 
+    .chat-reply-quote{
+      display:block;margin-bottom:6px;padding:6px 8px;border-radius:8px;
+      background:rgba(0,0,0,.22);border-left:2px solid var(--gold);
+    }
+    .chat-reply-quote .chat-reply-name{
+      display:block;font-family:var(--font-mono);font-size:.62rem;
+      font-weight:700;color:var(--gold);margin-bottom:1px;
+    }
+    .chat-reply-quote .chat-reply-text{
+      display:block;font-size:.76rem;color:#C7CCDA;
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+    }
+
     .chat-input-row{
       display:flex;gap:8px;padding:10px 14px calc(12px + var(--safe-b));
       border-top:1px solid var(--line);

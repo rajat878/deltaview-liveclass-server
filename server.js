@@ -158,9 +158,11 @@ socket.on("mute-student", ({ roomId, studentId }) => {
 });
 
 // ==========================
-// Chat — whole-room broadcast (no DMs yet)
+// Chat — whole-room broadcast (no DMs yet). Messages may optionally quote an
+// earlier message via replyTo — still broadcast to everyone, just rendered
+// as "replying to X" so a targeted reply keeps its context.
 // ==========================
-socket.on("chat-message", ({ roomId, text }) => {
+socket.on("chat-message", ({ roomId, text, replyTo }) => {
   const room = rooms[roomId];
   if (!room) return;
 
@@ -179,6 +181,22 @@ socket.on("chat-message", ({ roomId, text }) => {
     ? "Teacher"
     : (room.studentNames && room.studentNames[socket.id]) || "Student";
 
+  // Validate/trim the optional quoted message rather than trusting the
+  // client's shape wholesale — only the fields we actually render.
+  let safeReplyTo = null;
+  if (replyTo && typeof replyTo === "object") {
+    const replyText = typeof replyTo.text === "string" ? replyTo.text.trim().slice(0, 200) : "";
+    const replySenderName = typeof replyTo.senderName === "string" ? replyTo.senderName.trim().slice(0, 40) : "";
+    if (replyText && replySenderName) {
+      safeReplyTo = {
+        id: typeof replyTo.id === "string" ? replyTo.id : null,
+        senderId: typeof replyTo.senderId === "string" ? replyTo.senderId : null,
+        senderName: replySenderName,
+        text: replyText,
+      };
+    }
+  }
+
   const message = {
     id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
     senderId: socket.id,
@@ -186,6 +204,7 @@ socket.on("chat-message", ({ roomId, text }) => {
     role: isTeacher ? "teacher" : "student",
     text: safeText,
     ts: Date.now(),
+    replyTo: safeReplyTo,
   };
 
   room.chatHistory.push(message);

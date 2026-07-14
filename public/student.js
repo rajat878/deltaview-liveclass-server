@@ -124,7 +124,17 @@
 
     const bubble = document.createElement("div");
     bubble.className = "chat-bubble";
-    bubble.innerHTML = escapeHtml(msg.text);
+    if (msg.replyTo && msg.replyTo.text) {
+      const quote = document.createElement("div");
+      quote.className = "chat-reply-quote";
+      quote.innerHTML =
+        `<span class="chat-reply-name">${escapeHtml(msg.replyTo.senderName || "")}</span>` +
+        `<span class="chat-reply-text">${escapeHtml(msg.replyTo.text)}</span>`;
+      bubble.appendChild(quote);
+    }
+    const bodyEl = document.createElement("div");
+    bodyEl.innerHTML = escapeHtml(msg.text);
+    bubble.appendChild(bodyEl);
 
     row.appendChild(sender);
     row.appendChild(bubble);
