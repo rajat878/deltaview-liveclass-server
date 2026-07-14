@@ -19,6 +19,11 @@ const io = new Server(server, {
 // In-memory room storage
 const rooms = {};
 
+// How many recent chat messages we keep per room so a student who joins
+// mid-class (or reopens the chat drawer) has some context, without letting
+// a long session's history grow unbounded in memory.
+const CHAT_HISTORY_LIMIT = 100;
+
 // Serve the student join page (index.html, student.js, and the socket.io
 // client script) from the public/ folder. This MUST be registered before
 // the "/" health-check route below — Express matches routes in the order
@@ -51,6 +56,7 @@ rooms[roomId] = {
   students: [],
   raisedHands: new Set(),     // studentIds with hand currently raised
   allowedSpeakers: new Set(), // studentIds the teacher has granted mic permission to
+  chatHistory: [],            // rolling log of { id, senderId, senderName, role, text, ts }, capped at CHAT_HISTORY_LIMIT
 };
 
     socket.join(roomId);
@@ -85,9 +91,11 @@ rooms[roomId] = {
 
     console.log(`👨‍🎓 Student ${socket.id} (${displayName || "no name given"}) joined ${roomId}`);
 
-    // Notify student
+    // Notify student — include the recent chat log so joining mid-class
+    // doesn't drop them into a conversation with zero context.
     socket.emit("join-success", {
       roomId: roomId,
+      chatHistory: room.chatHistory || [],
     });
 
     // Notify teacher — this is what the Android app reads to show the
@@ -147,6 +155,50 @@ socket.on("mute-student", ({ roomId, studentId }) => {
   console.log(`🔇 Speak revoked: ${studentId} (Room: ${roomId})`);
 
   io.to(studentId).emit("speak-muted");
+});
+
+// ==========================
+// Chat — whole-room broadcast (no DMs yet)
+// ==========================
+socket.on("chat-message", ({ roomId, text }) => {
+  const room = rooms[roomId];
+  if (!room) return;
+
+  // Only a recognized participant of THIS room may post — guards against a
+  // stale/forged socket id posting into a room it never joined.
+  const isTeacher = socket.id === room.teacher;
+  const isStudent = room.students.includes(socket.id);
+  if (!isTeacher && !isStudent) return;
+
+  const trimmed = typeof text === "string" ? text.trim() : "";
+  if (!trimmed) return;
+  // Hard cap so one client can't push an enormous payload into memory/broadcast.
+  const safeText = trimmed.slice(0, 500);
+
+  const senderName = isTeacher
+    ? "Teacher"
+    : (room.studentNames && room.studentNames[socket.id]) || "Student";
+
+  const message = {
+    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    senderId: socket.id,
+    senderName,
+    role: isTeacher ? "teacher" : "student",
+    text: safeText,
+    ts: Date.now(),
+  };
+
+  room.chatHistory.push(message);
+  if (room.chatHistory.length > CHAT_HISTORY_LIMIT) {
+    room.chatHistory.shift();
+  }
+
+  console.log(`💬 Chat [${roomId}] ${senderName}: ${safeText}`);
+
+  // Broadcast to everyone in the room, including the sender — one source of
+  // truth for message ordering/rendering instead of each client locally
+  // echoing its own message differently.
+  io.to(roomId).emit("chat-message", message);
 });
 
 // ==========================

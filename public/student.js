@@ -39,6 +39,15 @@
   const statusBanner  = document.getElementById("status-banner");
   const channelReadout = document.getElementById("channel-readout"); // optional; decorative only
 
+  // ── Chat (optional; decorative only — page still works if these are missing) ──
+  const chatToggleBtn  = document.getElementById("chat-toggle-btn");
+  const chatBadge      = document.getElementById("chat-badge");
+  const chatDrawer     = document.getElementById("chat-drawer");
+  const chatCloseBtn   = document.getElementById("chat-close-btn");
+  const chatMessagesEl = document.getElementById("chat-messages");
+  const chatInput      = document.getElementById("chat-input");
+  const chatSendBtn    = document.getElementById("chat-send-btn");
+
   // ── Fail loudly (but not silently-dead) if the HTML and this script are
   // out of sync — e.g. an element was renamed/removed in one file but not
   // the other. Previously a single null here (used later, e.g. at
@@ -68,6 +77,9 @@
   let handRaised       = false; // has this student asked to speak?
   let speakAllowed      = false; // has the teacher granted mic permission?
   let bannerTimer       = null;
+  let chatOpen          = false;
+  let unreadChatCount    = 0;
+  let mySocketId        = null; // set once "connect" fires; used to tell "mine" bubbles apart
 
   function showBanner(msg, kind) {
     statusBanner.textContent = msg;
@@ -88,6 +100,74 @@
     setMicButtonState(false);
     micBtn.disabled = true;
     micBtn.textContent = "🔒 Mic locked";
+  }
+
+  // ── Chat helpers ────────────────────────────────────────────────────
+  function escapeHtml(str) {
+    const div = document.createElement("div");
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function renderChatMessage(msg) {
+    if (!chatMessagesEl) return;
+    const empty = chatMessagesEl.querySelector(".chat-empty");
+    if (empty) empty.remove();
+
+    const mine = msg.senderId === mySocketId;
+    const row = document.createElement("div");
+    row.className = "chat-msg" + (mine ? " mine" : "") + (msg.role === "teacher" ? " teacher" : "");
+
+    const sender = document.createElement("div");
+    sender.className = "chat-sender";
+    sender.textContent = mine ? "You" : (msg.senderName || "Student") + (msg.role === "teacher" ? " · Teacher" : "");
+
+    const bubble = document.createElement("div");
+    bubble.className = "chat-bubble";
+    bubble.innerHTML = escapeHtml(msg.text);
+
+    row.appendChild(sender);
+    row.appendChild(bubble);
+    chatMessagesEl.appendChild(row);
+    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
+  }
+
+  function resetChatUI() {
+    if (chatMessagesEl) {
+      chatMessagesEl.innerHTML = '<div class="chat-empty">No messages yet — say hi 👋</div>';
+    }
+    unreadChatCount = 0;
+    updateChatBadge();
+    chatOpen = false;
+    if (chatDrawer) chatDrawer.classList.remove("open");
+  }
+
+  function updateChatBadge() {
+    if (!chatBadge) return;
+    if (unreadChatCount > 0) {
+      chatBadge.textContent = unreadChatCount > 9 ? "9+" : String(unreadChatCount);
+      chatBadge.classList.remove("hidden");
+    } else {
+      chatBadge.classList.add("hidden");
+    }
+  }
+
+  function setChatOpen(open) {
+    chatOpen = open;
+    if (chatDrawer) chatDrawer.classList.toggle("open", open);
+    if (open) {
+      unreadChatCount = 0;
+      updateChatBadge();
+      if (chatInput) setTimeout(() => chatInput.focus(), 250);
+    }
+  }
+
+  function sendChatMessage() {
+    if (!chatInput || !socket || !socket.connected || !roomId) return;
+    const text = chatInput.value.trim();
+    if (!text) return;
+    socket.emit("chat-message", { roomId, text });
+    chatInput.value = "";
   }
 
   // ── Relay console logs to the teacher's app via the signaling server,
@@ -175,6 +255,7 @@
     if (channelReadout) channelReadout.textContent = "CH · " + roomId;
 
     resetHandAndSpeakState();
+    resetChatUI();
     show(waitingScreen);
 
     const waitingSubtitle = waitingScreen.querySelector(".subtitle");
@@ -191,6 +272,7 @@
 
     socket.on("connect", () => {
       clearTimeout(slowConnectTimer);
+      mySocketId = socket.id;
       logToTeacher("✅ Connected to signaling server");
 
       // BUG FIX: Socket.IO's "connect" event fires on every reconnect too,
@@ -222,6 +304,18 @@
 
     socket.on("join-success", (data) => {
       logToTeacher("✅ Joined room:", data.roomId);
+      if (Array.isArray(data.chatHistory) && data.chatHistory.length) {
+        if (chatMessagesEl) chatMessagesEl.innerHTML = "";
+        data.chatHistory.forEach(renderChatMessage);
+      }
+    });
+
+    socket.on("chat-message", (msg) => {
+      renderChatMessage(msg);
+      if (msg.senderId !== mySocketId && !chatOpen) {
+        unreadChatCount++;
+        updateChatBadge();
+      }
     });
 
     socket.on("join-error", (data) => {
@@ -482,6 +576,13 @@
 
   // Mic starts locked every page load until the teacher grants permission.
   micBtn.disabled = true;
+
+  if (chatToggleBtn) chatToggleBtn.addEventListener("click", () => setChatOpen(!chatOpen));
+  if (chatCloseBtn) chatCloseBtn.addEventListener("click", () => setChatOpen(false));
+  if (chatSendBtn) chatSendBtn.addEventListener("click", sendChatMessage);
+  if (chatInput) chatInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") sendChatMessage();
+  });
 
   fullscreenBtn.addEventListener("click", () => {
     if (remoteVideo.requestFullscreen) remoteVideo.requestFullscreen();
