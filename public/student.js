@@ -36,6 +36,7 @@
   const rejoinBtn     = document.getElementById("rejoin-btn");
   const micBtn        = document.getElementById("mic-btn");
   const raiseHandBtn  = document.getElementById("raise-hand-btn");
+  const confusedBtn   = document.getElementById("confused-btn");
   const statusBanner  = document.getElementById("status-banner");
   const channelReadout = document.getElementById("channel-readout"); // optional; decorative only
 
@@ -571,6 +572,27 @@
   });
 
   micBtn.addEventListener("click", toggleMic);
+
+  // Confused button — momentary signal, not a toggled on/off state like
+  // raise-hand. A short cooldown stops a nervous double-tap from spamming
+  // the teacher's heatmap with duplicate signals for the same moment.
+  let confusedCooldown = false;
+  if (confusedBtn) {
+    confusedBtn.addEventListener("click", () => {
+      if (!socket || !socket.connected || !roomId) return;
+      if (confusedCooldown) return;
+
+      socket.emit("mark-confused", { roomId });
+      showBanner("😵 Marked — the teacher will see where this happened.");
+
+      confusedBtn.classList.add("confused-flash");
+      confusedCooldown = true;
+      setTimeout(() => {
+        confusedBtn.classList.remove("confused-flash");
+        confusedCooldown = false;
+      }, 3000);
+    });
+  }
 
   raiseHandBtn.addEventListener("click", () => {
     if (!socket || !socket.connected || !roomId) return;

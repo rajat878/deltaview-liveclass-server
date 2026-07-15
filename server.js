@@ -27,6 +27,10 @@ const rooms = {};
 // a long session's history grow unbounded in memory.
 const CHAT_HISTORY_LIMIT = 100;
 
+// Same idea for confusion taps — bounded so a very long / very confused
+// session can't grow this unboundedly in memory.
+const CONFUSION_HISTORY_LIMIT = 500;
+
 // Serve the student join page (index.html, student.js, and the socket.io
 // client script) from the public/ folder. This MUST be registered before
 // the "/" health-check route below — Express matches routes in the order
@@ -108,6 +112,7 @@ rooms[roomId] = {
   raisedHands: new Set(),     // studentIds with hand currently raised
   allowedSpeakers: new Set(), // studentIds the teacher has granted mic permission to
   chatHistory: [],            // rolling log of { id, senderId, senderName, role, text, ts }, capped at CHAT_HISTORY_LIMIT
+  confusionEvents: [],        // rolling log of { studentId, ts }, capped at CONFUSION_HISTORY_LIMIT — used to rebuild the heatmap if the teacher app reconnects mid-session
 };
 
     db.startSession(sessionId, roomId);
@@ -210,6 +215,36 @@ socket.on("lower-hand", ({ roomId }) => {
   console.log(`🖐️ Hand lowered: ${socket.id} (Room: ${roomId})`);
 
   io.to(room.teacher).emit("hand-lowered", { studentId: socket.id });
+});
+
+// ==========================
+// Student marks a moment as confusing — the confusion heatmap feature.
+// Deliberately NOT trusting any client-supplied timestamp: phone clocks
+// drift/skew relative to each other, and the whole point of this feature is
+// correlating "when" against the teacher's own stroke timeline, so every
+// student's tap has to be measured against the same clock the teacher's
+// strokes are stamped with (the server's).
+// ==========================
+socket.on("mark-confused", ({ roomId }) => {
+  const room = rooms[roomId];
+  if (!room) return;
+
+  // Only a recognized student of this room can raise a confusion signal —
+  // same guard as chat-message.
+  if (!room.students.includes(socket.id)) return;
+
+  const ts = Date.now();
+  room.confusionEvents.push({ studentId: socket.id, ts });
+  if (room.confusionEvents.length > CONFUSION_HISTORY_LIMIT) {
+    room.confusionEvents.shift();
+  }
+
+  console.log(`😵 Confusion marked: ${socket.id} (Room: ${roomId}) @ ${ts}`);
+
+  io.to(room.teacher).emit("confusion-marked", {
+    studentId: socket.id,
+    ts,
+  });
 });
 
 // ==========================
