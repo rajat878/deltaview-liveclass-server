@@ -3,7 +3,7 @@ const http = require("http");
 const path = require("path");
 const { Server } = require("socket.io");
 const cors = require("cors");
-const { v4: uuidv4 } = require("uuid");
+const { randomUUID } = require("crypto"); // built into Node — avoids the uuid package's ESM-only require() issue
 const db = require("./db");
 
 const app = express();
@@ -98,7 +98,7 @@ io.on("connection", (socket) => {
       .substring(2, 8)
       .toUpperCase();
 
-    const sessionId = uuidv4();
+    const sessionId = randomUUID();
 
 rooms[roomId] = {
   teacher: socket.id,
