@@ -57,6 +57,27 @@ function buildPollResults(room) {
   };
 }
 
+// Per-student breakdown of who voted for what — teacher-only (never
+// broadcast to the room) since classmates shouldn't see each other's
+// answers. Resolves each studentId to the display name captured at
+// join-room time so the teacher UI can show real names, not socket ids.
+function buildPollVoterBreakdown(room) {
+  const poll = room.poll;
+  if (!poll) return [];
+
+  const optionsById = {};
+  poll.options.forEach((o) => { optionsById[o.id] = o.text; });
+
+  const names = room.studentNames || {};
+
+  return Object.entries(poll.votes).map(([studentId, optionId]) => ({
+    studentId,
+    name: names[studentId] || "Unnamed student",
+    optionId,
+    optionText: optionsById[optionId] || optionId,
+  }));
+}
+
 // Serve the student join page (index.html, student.js, and the socket.io
 // client script) from the public/ folder. This MUST be registered before
 // the "/" health-check route below — Express matches routes in the order
@@ -337,6 +358,9 @@ socket.on("start-poll", ({ roomId, question, options }) => {
   // Also send the (empty) initial tally, so every client's results view
   // starts from the same shape it'll receive on every subsequent vote.
   io.to(roomId).emit("poll-results", buildPollResults(room));
+  // Teacher-only: who-voted-for-what, starts empty and fills in as votes
+  // come in via submit-vote below.
+  io.to(room.teacher).emit("poll-voters", buildPollVoterBreakdown(room));
 });
 
 socket.on("submit-vote", ({ roomId, optionId }) => {
@@ -356,6 +380,10 @@ socket.on("submit-vote", ({ roomId, optionId }) => {
   console.log(`🗳️ Vote [${roomId}]: ${socket.id} -> ${optionId}`);
 
   io.to(roomId).emit("poll-results", buildPollResults(room));
+  // Teacher-only: refresh the who-voted-for-what list. Sent as its own
+  // event (not broadcast to the room) so classmates never see each
+  // other's individual answers — only the teacher gets names.
+  io.to(room.teacher).emit("poll-voters", buildPollVoterBreakdown(room));
 });
 
 socket.on("end-poll", ({ roomId }) => {
