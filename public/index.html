@@ -227,6 +227,47 @@
       background:rgba(255,71,87,.18);border-color:rgba(255,71,87,.6);color:var(--red);
       transition:background .15s, border-color .15s, color .15s;
     }
+    #confused-btn.confused-active{
+      background:rgba(255,71,87,.28);border-color:var(--red);color:var(--red);
+    }
+
+    /* ── Confused area-select overlay ────────────────────────────────
+       Lets the student drag directly over the broadcast to mark exactly
+       where they're confused, instead of a blind tap that only signals
+       *when*, not *where*. */
+    #confusion-overlay{
+      position:fixed;inset:0;z-index:15;touch-action:none;
+      background:rgba(10,14,23,.2);display:none;
+    }
+    #confusion-overlay.active{display:block;}
+    #confusion-hint{
+      position:fixed;top:calc(52px + var(--safe-t));left:12px;right:12px;z-index:16;
+      text-align:center;font-size:.82rem;padding:10px 14px;border-radius:10px;
+      background:var(--console);color:var(--paper);border:1px solid var(--line);
+      font-weight:500;
+    }
+    #confusion-box{
+      position:absolute;border:2px solid var(--red);border-radius:8px;
+      background:rgba(255,71,87,.2);
+      box-shadow:0 0 0 9999px rgba(10,14,23,.4);
+      display:none;
+    }
+    #confusion-box.show{display:block;}
+    #confusion-box .handle{
+      position:absolute;width:20px;height:20px;right:-10px;bottom:-10px;
+      border-radius:50%;background:var(--red);border:2px solid #fff;
+    }
+    #confusion-actions{
+      position:fixed;left:0;right:0;bottom:calc(16px + var(--safe-b));z-index:16;
+      display:none;justify-content:center;gap:12px;padding:0 20px;
+    }
+    #confusion-actions.show{display:flex;}
+    #confusion-actions button{
+      width:auto;flex:none;padding:13px 26px;border-radius:13px;font-weight:600;font-size:.9rem;
+      border:1px solid var(--line);color:var(--paper);box-shadow:none;
+    }
+    #confusion-send-btn{background:var(--red);border-color:var(--red);}
+    #confusion-cancel-btn{background:var(--console);}
 
     #mic-btn{flex:1.3;}
     #mic-btn:disabled{background:var(--panel);color:#4B5573;box-shadow:none;}
@@ -393,6 +434,17 @@
   </div>
   <div id="status-banner"></div>
   <video id="remote-video" autoplay playsinline></video>
+
+  <!-- Drag over the exact spot you're confused about; only shown while marking. -->
+  <div id="confusion-overlay">
+    <div id="confusion-hint">Drag over the exact spot you're confused about</div>
+    <div id="confusion-box"><div class="handle"></div></div>
+  </div>
+  <div id="confusion-actions">
+    <button id="confusion-send-btn">😵 Send</button>
+    <button id="confusion-cancel-btn">Cancel</button>
+  </div>
+
   <div class="console-wrap">
     <div class="console-label">Studio console</div>
     <div class="console">

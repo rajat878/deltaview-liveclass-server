@@ -224,8 +224,15 @@ socket.on("lower-hand", ({ roomId }) => {
 // correlating "when" against the teacher's own stroke timeline, so every
 // student's tap has to be measured against the same clock the teacher's
 // strokes are stamped with (the server's).
+//
+// x/y/w/h are optional and, when present, are normalized 0..1 to the
+// student's video content (not raw device pixels) — exactly where they
+// dragged/tapped on their screen. This is what lets the teacher render the
+// marker in the *actual* spot the student meant, instead of only guessing
+// from what was drawn recently. Older clients that only send {roomId} still
+// work unchanged; the area is simply omitted downstream.
 // ==========================
-socket.on("mark-confused", ({ roomId }) => {
+socket.on("mark-confused", ({ roomId, x, y, w, h }) => {
   const room = rooms[roomId];
   if (!room) return;
 
@@ -234,16 +241,31 @@ socket.on("mark-confused", ({ roomId }) => {
   if (!room.students.includes(socket.id)) return;
 
   const ts = Date.now();
-  room.confusionEvents.push({ studentId: socket.id, ts });
+  const hasArea = typeof x === "number" && typeof y === "number";
+  const studentName = (room.studentNames && room.studentNames[socket.id]) || null;
+
+  const event = { studentId: socket.id, ts };
+  if (hasArea) {
+    event.x = x;
+    event.y = y;
+    event.w = typeof w === "number" ? w : 0.06;
+    event.h = typeof h === "number" ? h : 0.06;
+  }
+  room.confusionEvents.push(event);
   if (room.confusionEvents.length > CONFUSION_HISTORY_LIMIT) {
     room.confusionEvents.shift();
   }
 
-  console.log(`😵 Confusion marked: ${socket.id} (Room: ${roomId}) @ ${ts}`);
+  console.log(
+    `😵 Confusion marked: ${socket.id}${studentName ? " (" + studentName + ")" : ""} (Room: ${roomId}) @ ${ts}` +
+    (hasArea ? ` area=(${event.x.toFixed(2)}, ${event.y.toFixed(2)}, ${event.w.toFixed(2)}x${event.h.toFixed(2)})` : "")
+  );
 
   io.to(room.teacher).emit("confusion-marked", {
     studentId: socket.id,
     ts,
+    ...(studentName ? { name: studentName } : {}),
+    ...(hasArea ? { x: event.x, y: event.y, w: event.w, h: event.h } : {}),
   });
 });
 

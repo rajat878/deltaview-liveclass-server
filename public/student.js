@@ -39,6 +39,11 @@
   const confusedBtn   = document.getElementById("confused-btn");
   const statusBanner  = document.getElementById("status-banner");
   const channelReadout = document.getElementById("channel-readout"); // optional; decorative only
+  const confusionOverlay   = document.getElementById("confusion-overlay");
+  const confusionBox       = document.getElementById("confusion-box");
+  const confusionActions   = document.getElementById("confusion-actions");
+  const confusionSendBtn   = document.getElementById("confusion-send-btn");
+  const confusionCancelBtn = document.getElementById("confusion-cancel-btn");
 
   // ── Chat (optional; decorative only — page still works if these are missing) ──
   const chatToggleBtn  = document.getElementById("chat-toggle-btn");
@@ -515,6 +520,7 @@
     if (remoteVideo) { remoteVideo.pause(); remoteVideo.srcObject = null; }
     micTransceiver = null;
     resetHandAndSpeakState();
+    if (typeof exitConfusionMode === "function" && confusionActive) exitConfusionMode();
   }
 
   function setMicButtonState(on) {
@@ -556,6 +562,161 @@
     setMicButtonState(turningOn);
   }
 
+  // ── "Confused" area select ──────────────────────────────────────────
+  // Drag directly over the mirrored teacher screen to mark exactly where
+  // you're confused, instead of a blind tap that only records *when*. The
+  // drag rectangle is converted to coordinates normalized (0..1) to the
+  // actual VIDEO CONTENT area — not the raw viewport — which is what makes
+  // this land accurately on the teacher's side: <video> uses
+  // object-fit:contain, so depending on the student's screen aspect ratio
+  // there can be black letterbox bars above/below or left/right of the
+  // picture. Normalizing to the rendered picture (not the element box)
+  // means the same relative spot lands in the same place on the teacher's
+  // canvas regardless of the student's device shape.
+  let confusionActive = false;
+  let dragStart = null;    // {x, y} in viewport px, where the drag began
+  let dragLastRect = null; // last on-screen box rect (viewport px), for sending
+
+  function getVideoContentRect() {
+    const rect = remoteVideo.getBoundingClientRect();
+    const vw = remoteVideo.videoWidth;
+    const vh = remoteVideo.videoHeight;
+    if (!vw || !vh) return rect; // no frame yet — fall back to full element
+
+    const elementRatio = rect.width / rect.height;
+    const videoRatio = vw / vh;
+
+    let contentWidth, contentHeight, offsetX, offsetY;
+    if (videoRatio > elementRatio) {
+      contentWidth = rect.width;
+      contentHeight = rect.width / videoRatio;
+      offsetX = 0;
+      offsetY = (rect.height - contentHeight) / 2;
+    } else {
+      contentHeight = rect.height;
+      contentWidth = rect.height * videoRatio;
+      offsetY = 0;
+      offsetX = (rect.width - contentWidth) / 2;
+    }
+    return {
+      left: rect.left + offsetX,
+      top: rect.top + offsetY,
+      width: contentWidth,
+      height: contentHeight,
+    };
+  }
+
+  function toNormalized(clientX, clientY, contentRect) {
+    const x = (clientX - contentRect.left) / contentRect.width;
+    const y = (clientY - contentRect.top) / contentRect.height;
+    return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+  }
+
+  const MIN_BOX_FRACTION = 0.05; // a bare tap still marks a visible, sendable area
+
+  function enterConfusionMode() {
+    if (!confusionOverlay) return;
+    confusionActive = true;
+    dragStart = null;
+    dragLastRect = null;
+    confusionBox.classList.remove("show");
+    confusionActions.classList.remove("show");
+    confusionOverlay.classList.add("active");
+    confusedBtn.classList.add("confused-active");
+  }
+
+  function exitConfusionMode() {
+    if (!confusionOverlay) return;
+    confusionActive = false;
+    dragStart = null;
+    dragLastRect = null;
+    confusionOverlay.classList.remove("active");
+    confusionBox.classList.remove("show");
+    confusionActions.classList.remove("show");
+    confusedBtn.classList.remove("confused-active");
+  }
+
+  function updateBoxFromDrag(clientX, clientY) {
+    const contentRect = getVideoContentRect();
+    const x1 = Math.min(dragStart.x, clientX);
+    const y1 = Math.min(dragStart.y, clientY);
+    let x2 = Math.max(dragStart.x, clientX);
+    let y2 = Math.max(dragStart.y, clientY);
+
+    const minSide = contentRect.width * MIN_BOX_FRACTION;
+    if (x2 - x1 < minSide) {
+      const cx = (x1 + x2) / 2;
+      x2 = cx + minSide / 2;
+    }
+    if (y2 - y1 < minSide) {
+      const cy = (y1 + y2) / 2;
+      y2 = cy + minSide / 2;
+    }
+
+    const rect = { left: x1, top: y1, width: x2 - x1, height: y2 - y1 };
+    dragLastRect = rect;
+
+    confusionBox.style.left   = rect.left + "px";
+    confusionBox.style.top    = rect.top + "px";
+    confusionBox.style.width  = rect.width + "px";
+    confusionBox.style.height = rect.height + "px";
+    confusionBox.classList.add("show");
+  }
+
+  if (confusionOverlay) {
+    confusionOverlay.addEventListener("pointerdown", (e) => {
+      dragStart = { x: e.clientX, y: e.clientY };
+      confusionActions.classList.remove("show");
+      updateBoxFromDrag(e.clientX, e.clientY);
+    });
+
+    confusionOverlay.addEventListener("pointermove", (e) => {
+      if (!dragStart) return;
+      updateBoxFromDrag(e.clientX, e.clientY);
+    });
+
+    confusionOverlay.addEventListener("pointerup", (e) => {
+      if (!dragStart) return;
+      updateBoxFromDrag(e.clientX, e.clientY);
+      dragStart = null;
+      confusionActions.classList.add("show");
+    });
+
+    confusionCancelBtn.addEventListener("click", exitConfusionMode);
+
+    confusionSendBtn.addEventListener("click", () => {
+      if (!dragLastRect || !socket || !socket.connected || !roomId) {
+        exitConfusionMode();
+        return;
+      }
+      const contentRect = getVideoContentRect();
+      const topLeft = toNormalized(dragLastRect.left, dragLastRect.top, contentRect);
+      const bottomRight = toNormalized(
+        dragLastRect.left + dragLastRect.width,
+        dragLastRect.top + dragLastRect.height,
+        contentRect
+      );
+
+      socket.emit("mark-confused", {
+        roomId,
+        x: topLeft.x,
+        y: topLeft.y,
+        w: Math.max(0.01, bottomRight.x - topLeft.x),
+        h: Math.max(0.01, bottomRight.y - topLeft.y),
+      });
+
+      showBanner("😵 Marked — the teacher can see exactly where.");
+      exitConfusionMode();
+
+      confusedBtn.classList.add("confused-flash");
+      confusedCooldown = true;
+      setTimeout(() => {
+        confusedBtn.classList.remove("confused-flash");
+        confusedCooldown = false;
+      }, 3000);
+    });
+  }
+
   // ── Auto-fill room code from URL ?room=ROOMCODE ───────────────────────
   const urlParams = new URLSearchParams(window.location.search);
   const roomParam = urlParams.get("room");
@@ -573,24 +734,17 @@
 
   micBtn.addEventListener("click", toggleMic);
 
-  // Confused button — momentary signal, not a toggled on/off state like
-  // raise-hand. A short cooldown stops a nervous double-tap from spamming
-  // the teacher's heatmap with duplicate signals for the same moment.
+  // Confused button opens the drag-to-select overlay (see above) instead of
+  // firing blind — the whole point is telling the teacher exactly WHERE,
+  // not just that a tap happened. A short cooldown after sending stops a
+  // nervous double-tap from spamming duplicate signals for the same moment.
   let confusedCooldown = false;
   if (confusedBtn) {
     confusedBtn.addEventListener("click", () => {
       if (!socket || !socket.connected || !roomId) return;
       if (confusedCooldown) return;
-
-      socket.emit("mark-confused", { roomId });
-      showBanner("😵 Marked — the teacher will see where this happened.");
-
-      confusedBtn.classList.add("confused-flash");
-      confusedCooldown = true;
-      setTimeout(() => {
-        confusedBtn.classList.remove("confused-flash");
-        confusedCooldown = false;
-      }, 3000);
+      if (confusionActive) { exitConfusionMode(); return; }
+      enterConfusionMode();
     });
   }
 
