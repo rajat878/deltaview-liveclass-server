@@ -31,6 +31,32 @@ const CHAT_HISTORY_LIMIT = 100;
 // session can't grow this unboundedly in memory.
 const CONFUSION_HISTORY_LIMIT = 500;
 
+// ==========================
+// Poll results — computes the current tally for a room's active (or most
+// recently ended) poll. Centralized here since both the vote handler and
+// the disconnect cleanup need to recompute + broadcast the same shape.
+// ==========================
+function buildPollResults(room) {
+  const poll = room.poll;
+  if (!poll) return null;
+
+  const votes = Object.values(poll.votes); // optionId per student
+  const totalVotes = votes.length;
+
+  const options = poll.options.map((opt) => {
+    const count = votes.filter((v) => v === opt.id).length;
+    const pct = totalVotes > 0 ? Math.round((count / totalVotes) * 100) : 0;
+    return { id: opt.id, text: opt.text, count, pct };
+  });
+
+  return {
+    question: poll.question,
+    options,
+    totalVotes,
+    active: poll.active,
+  };
+}
+
 // Serve the student join page (index.html, student.js, and the socket.io
 // client script) from the public/ folder. This MUST be registered before
 // the "/" health-check route below — Express matches routes in the order
@@ -113,6 +139,7 @@ rooms[roomId] = {
   allowedSpeakers: new Set(), // studentIds the teacher has granted mic permission to
   chatHistory: [],            // rolling log of { id, senderId, senderName, role, text, ts }, capped at CHAT_HISTORY_LIMIT
   confusionEvents: [],        // rolling log of { studentId, ts }, capped at CONFUSION_HISTORY_LIMIT — used to rebuild the heatmap if the teacher app reconnects mid-session
+  poll: null,                 // { question, options: [{id, text}], votes: { studentId: optionId }, active, startedAt } — only one poll live at a time; a new "start-poll" simply replaces it
 };
 
     db.startSession(sessionId, roomId);
@@ -180,6 +207,10 @@ rooms[roomId] = {
       roomId: roomId,
       chatHistory: room.chatHistory || [],
       rosterMatched: !!rosterMatch,
+      // So a student who joins (or reconnects) mid-poll sees it immediately
+      // instead of waiting for the next "poll-results" broadcast. myVote is
+      // always null here since this socket.id has never voted yet.
+      poll: room.poll ? { ...buildPollResults(room), myVote: null } : null,
     });
 
     // Notify teacher — this is what the Android app reads to show the
@@ -224,8 +255,15 @@ socket.on("lower-hand", ({ roomId }) => {
 // correlating "when" against the teacher's own stroke timeline, so every
 // student's tap has to be measured against the same clock the teacher's
 // strokes are stamped with (the server's).
+//
+// x/y/w/h are optional and, when present, are normalized 0..1 to the
+// student's video content (not raw device pixels) — exactly where they
+// dragged/tapped on their screen. This is what lets the teacher render the
+// marker in the *actual* spot the student meant, instead of only guessing
+// from what was drawn recently. Older clients that only send {roomId} still
+// work unchanged; the area is simply omitted downstream.
 // ==========================
-socket.on("mark-confused", ({ roomId }) => {
+socket.on("mark-confused", ({ roomId, x, y, w, h }) => {
   const room = rooms[roomId];
   if (!room) return;
 
@@ -234,17 +272,101 @@ socket.on("mark-confused", ({ roomId }) => {
   if (!room.students.includes(socket.id)) return;
 
   const ts = Date.now();
-  room.confusionEvents.push({ studentId: socket.id, ts });
+  const hasArea = typeof x === "number" && typeof y === "number";
+  const studentName = (room.studentNames && room.studentNames[socket.id]) || null;
+
+  const event = { studentId: socket.id, ts };
+  if (hasArea) {
+    event.x = x;
+    event.y = y;
+    event.w = typeof w === "number" ? w : 0.06;
+    event.h = typeof h === "number" ? h : 0.06;
+  }
+  room.confusionEvents.push(event);
   if (room.confusionEvents.length > CONFUSION_HISTORY_LIMIT) {
     room.confusionEvents.shift();
   }
 
-  console.log(`😵 Confusion marked: ${socket.id} (Room: ${roomId}) @ ${ts}`);
+  console.log(
+    `😵 Confusion marked: ${socket.id}${studentName ? " (" + studentName + ")" : ""} (Room: ${roomId}) @ ${ts}` +
+    (hasArea ? ` area=(${event.x.toFixed(2)}, ${event.y.toFixed(2)}, ${event.w.toFixed(2)}x${event.h.toFixed(2)})` : "")
+  );
 
   io.to(room.teacher).emit("confusion-marked", {
     studentId: socket.id,
     ts,
+    ...(studentName ? { name: studentName } : {}),
+    ...(hasArea ? { x: event.x, y: event.y, w: event.w, h: event.h } : {}),
   });
+});
+
+// ==========================
+// Live poll — teacher starts a single-question, multiple-choice poll;
+// students vote once (revoting just changes their answer); everyone in the
+// room gets the live tally on every vote so students see results update in
+// real time too, not just the teacher.
+// ==========================
+socket.on("start-poll", ({ roomId, question, options }) => {
+  const room = rooms[roomId];
+  if (!room || socket.id !== room.teacher) return; // only the teacher may start a poll
+
+  const cleanQuestion = typeof question === "string" ? question.trim().slice(0, 200) : "";
+  const cleanOptions = Array.isArray(options)
+    ? options
+        .map((o) => (typeof o === "string" ? o.trim().slice(0, 80) : ""))
+        .filter((o) => o.length > 0)
+        .slice(0, 6) // hard cap — a poll with more than 6 options stops being quick to answer
+    : [];
+
+  if (!cleanQuestion || cleanOptions.length < 2) return; // need a question and at least 2 real options
+
+  room.poll = {
+    question: cleanQuestion,
+    options: cleanOptions.map((text, i) => ({ id: `opt${i + 1}`, text })),
+    votes: {}, // studentId -> optionId
+    active: true,
+    startedAt: Date.now(),
+  };
+
+  console.log(`📊 Poll started [${roomId}]: "${cleanQuestion}" (${cleanOptions.length} options)`);
+
+  io.to(roomId).emit("poll-started", {
+    question: room.poll.question,
+    options: room.poll.options,
+  });
+  // Also send the (empty) initial tally, so every client's results view
+  // starts from the same shape it'll receive on every subsequent vote.
+  io.to(roomId).emit("poll-results", buildPollResults(room));
+});
+
+socket.on("submit-vote", ({ roomId, optionId }) => {
+  const room = rooms[roomId];
+  if (!room || !room.poll || !room.poll.active) return;
+
+  // Only a recognized student of this room can vote — same guard as chat/confusion.
+  if (!room.students.includes(socket.id)) return;
+
+  const validOption = room.poll.options.some((o) => o.id === optionId);
+  if (!validOption) return;
+
+  // One vote per student; casting again just changes their answer rather
+  // than adding a second vote.
+  room.poll.votes[socket.id] = optionId;
+
+  console.log(`🗳️ Vote [${roomId}]: ${socket.id} -> ${optionId}`);
+
+  io.to(roomId).emit("poll-results", buildPollResults(room));
+});
+
+socket.on("end-poll", ({ roomId }) => {
+  const room = rooms[roomId];
+  if (!room || socket.id !== room.teacher || !room.poll) return; // only the teacher may end it
+
+  room.poll.active = false;
+
+  console.log(`📊 Poll ended [${roomId}]: "${room.poll.question}"`);
+
+  io.to(roomId).emit("poll-ended", buildPollResults(room));
 });
 
 // ==========================
@@ -414,6 +536,14 @@ socket.on("ice-candidate", ({ targetId, roomId, candidate }) => {
       room.raisedHands.delete(socket.id);
       room.allowedSpeakers.delete(socket.id);
       if (room.studentNames) delete room.studentNames[socket.id];
+
+      // A departing student's vote shouldn't keep counting toward the live
+      // tally — drop it and re-broadcast so the teacher's (and everyone
+      // else's) results stay accurate to who's actually still in the room.
+      if (room.poll && room.poll.votes[socket.id] !== undefined) {
+        delete room.poll.votes[socket.id];
+        io.to(roomId).emit("poll-results", buildPollResults(room));
+      }
 
       const attendanceRowId = room.attendanceRows && room.attendanceRows[socket.id];
       if (attendanceRowId) {

@@ -39,6 +39,11 @@
   const confusedBtn   = document.getElementById("confused-btn");
   const statusBanner  = document.getElementById("status-banner");
   const channelReadout = document.getElementById("channel-readout"); // optional; decorative only
+  const confusionOverlay   = document.getElementById("confusion-overlay");
+  const confusionBox       = document.getElementById("confusion-box");
+  const confusionActions   = document.getElementById("confusion-actions");
+  const confusionSendBtn   = document.getElementById("confusion-send-btn");
+  const confusionCancelBtn = document.getElementById("confusion-cancel-btn");
 
   // ── Chat (optional; decorative only — page still works if these are missing) ──
   const chatToggleBtn  = document.getElementById("chat-toggle-btn");
@@ -48,6 +53,13 @@
   const chatMessagesEl = document.getElementById("chat-messages");
   const chatInput      = document.getElementById("chat-input");
   const chatSendBtn    = document.getElementById("chat-send-btn");
+
+  // ── Poll (optional; decorative only — page still works if these are missing) ──
+  const pollToggleBtn = document.getElementById("poll-toggle-btn");
+  const pollBadge     = document.getElementById("poll-badge");
+  const pollDrawer    = document.getElementById("poll-drawer");
+  const pollCloseBtn  = document.getElementById("poll-close-btn");
+  const pollBodyEl    = document.getElementById("poll-body");
 
   // ── Fail loudly (but not silently-dead) if the HTML and this script are
   // out of sync — e.g. an element was renamed/removed in one file but not
@@ -81,6 +93,14 @@
   let chatOpen          = false;
   let unreadChatCount    = 0;
   let mySocketId        = null; // set once "connect" fires; used to tell "mine" bubbles apart
+
+  // ── Poll state ──────────────────────────────────────────────────────
+  // activePoll is null when no poll has run yet this session; otherwise:
+  // { question, options: [{id, text, count, pct}], totalVotes, active, myVote }
+  let activePoll   = null;
+  let pollOpen     = false;
+  let pollSeen     = true; // false right after a poll starts, until the drawer is opened
+  let pollSelected = null; // optionId the student has tapped but not yet submitted
 
   function showBanner(msg, kind) {
     statusBanner.textContent = msg;
@@ -181,6 +201,102 @@
     chatInput.value = "";
   }
 
+  // ── Poll helpers ─────────────────────────────────────────────────────
+  function updatePollBadge() {
+    if (!pollBadge) return;
+    const showBadge = !!activePoll && activePoll.active && !pollSeen && !pollOpen;
+    pollBadge.classList.toggle("hidden", !showBadge);
+  }
+
+  function setPollOpen(open) {
+    pollOpen = open;
+    if (pollDrawer) pollDrawer.classList.toggle("open", open);
+    if (open) {
+      pollSeen = true;
+      updatePollBadge();
+    }
+  }
+
+  function resetPollUI() {
+    activePoll = null;
+    pollSelected = null;
+    pollSeen = true;
+    pollOpen = false;
+    if (pollDrawer) pollDrawer.classList.remove("open");
+    renderPoll();
+  }
+
+  // Renders whichever state applies: no poll yet, still voting (not voted),
+  // or results (voted already, or the poll has ended). Fully re-rendered on
+  // every update rather than patched incrementally — a poll changes shape
+  // rarely enough (once per start/vote/end) that this is simpler and can't
+  // drift out of sync with the data.
+  function renderPoll() {
+    if (!pollBodyEl) return;
+
+    if (!activePoll) {
+      pollBodyEl.innerHTML = '<div class="poll-empty">No poll running right now.</div>';
+      return;
+    }
+
+    const showResults = !activePoll.active || activePoll.myVote != null;
+
+    if (!showResults) {
+      const optionsHtml = activePoll.options.map((opt) => {
+        const selected = pollSelected === opt.id;
+        return (
+          `<button type="button" class="poll-option-btn${selected ? " selected" : ""}" data-option-id="${escapeHtml(opt.id)}">` +
+            `<span class="opt-dot"></span><span>${escapeHtml(opt.text)}</span>` +
+          `</button>`
+        );
+      }).join("");
+
+      pollBodyEl.innerHTML =
+        `<div class="poll-question">${escapeHtml(activePoll.question)}</div>` +
+        optionsHtml +
+        `<button type="button" id="poll-vote-btn"${pollSelected ? "" : " disabled"}>Submit vote</button>`;
+
+      pollBodyEl.querySelectorAll(".poll-option-btn").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          pollSelected = btn.getAttribute("data-option-id");
+          renderPoll();
+        });
+      });
+
+      const voteBtn = document.getElementById("poll-vote-btn");
+      if (voteBtn) voteBtn.addEventListener("click", submitPollVote);
+    } else {
+      const rowsHtml = activePoll.options.map((opt) => {
+        const mine = activePoll.myVote === opt.id;
+        return (
+          `<div class="poll-result-row">` +
+            `<div class="poll-result-top">` +
+              `<span class="poll-result-label${mine ? " poll-result-mine" : ""}">${escapeHtml(opt.text)}${mine ? " · Your vote" : ""}</span>` +
+              `<span class="poll-result-count">${opt.count} · ${opt.pct}%</span>` +
+            `</div>` +
+            `<div class="poll-bar-track"><div class="poll-bar-fill" style="width:${opt.pct}%"></div></div>` +
+          `</div>`
+        );
+      }).join("");
+
+      pollBodyEl.innerHTML =
+        (!activePoll.active ? '<span class="poll-ended-tag">Poll closed</span>' : "") +
+        `<div class="poll-question">${escapeHtml(activePoll.question)}</div>` +
+        rowsHtml +
+        `<div class="poll-total-votes">${activePoll.totalVotes} vote${activePoll.totalVotes === 1 ? "" : "s"}</div>`;
+    }
+  }
+
+  function submitPollVote() {
+    if (!pollSelected || !socket || !socket.connected || !roomId) return;
+    socket.emit("submit-vote", { roomId, optionId: pollSelected });
+    // Optimistically mark as voted so results render immediately; the
+    // server's "poll-results" broadcast (which includes everyone else's
+    // votes too) arrives right behind this and reconciles the counts.
+    if (activePoll) activePoll.myVote = pollSelected;
+    renderPoll();
+  }
+
   // ── Relay console logs to the teacher's app via the signaling server,
   // so they show up directly in Android Studio's Logcat (tag:LiveClassManager)
   // without needing chrome://inspect USB debugging on the student's phone.
@@ -267,6 +383,7 @@
 
     resetHandAndSpeakState();
     resetChatUI();
+    resetPollUI();
     show(waitingScreen);
 
     const waitingSubtitle = waitingScreen.querySelector(".subtitle");
@@ -319,6 +436,12 @@
         if (chatMessagesEl) chatMessagesEl.innerHTML = "";
         data.chatHistory.forEach(renderChatMessage);
       }
+      if (data.poll) {
+        activePoll = data.poll;
+        pollSeen = !activePoll.active; // don't badge a poll that's already closed
+        renderPoll();
+        updatePollBadge();
+      }
     });
 
     socket.on("chat-message", (msg) => {
@@ -327,6 +450,38 @@
         unreadChatCount++;
         updateChatBadge();
       }
+    });
+
+    // ── Poll ──────────────────────────────────────────────────────────
+    socket.on("poll-started", (data) => {
+      logToTeacher("📊 Poll started:", data.question);
+      activePoll = {
+        question: data.question,
+        options: (data.options || []).map((o) => ({ ...o, count: 0, pct: 0 })),
+        totalVotes: 0,
+        active: true,
+        myVote: null,
+      };
+      pollSelected = null;
+      pollSeen = false;
+      renderPoll();
+      updatePollBadge();
+      if (!pollOpen) showBanner("📊 A new poll just started — tap the poll icon to vote.");
+    });
+
+    socket.on("poll-results", (results) => {
+      if (!results) return;
+      const myVote = activePoll ? activePoll.myVote : null;
+      activePoll = { ...results, myVote };
+      renderPoll();
+    });
+
+    socket.on("poll-ended", (results) => {
+      if (!results) return;
+      logToTeacher("📊 Poll ended:", results.question);
+      const myVote = activePoll ? activePoll.myVote : null;
+      activePoll = { ...results, active: false, myVote };
+      renderPoll();
     });
 
     socket.on("join-error", (data) => {
@@ -515,6 +670,7 @@
     if (remoteVideo) { remoteVideo.pause(); remoteVideo.srcObject = null; }
     micTransceiver = null;
     resetHandAndSpeakState();
+    if (typeof exitConfusionMode === "function" && confusionActive) exitConfusionMode();
   }
 
   function setMicButtonState(on) {
@@ -556,6 +712,161 @@
     setMicButtonState(turningOn);
   }
 
+  // ── "Confused" area select ──────────────────────────────────────────
+  // Drag directly over the mirrored teacher screen to mark exactly where
+  // you're confused, instead of a blind tap that only records *when*. The
+  // drag rectangle is converted to coordinates normalized (0..1) to the
+  // actual VIDEO CONTENT area — not the raw viewport — which is what makes
+  // this land accurately on the teacher's side: <video> uses
+  // object-fit:contain, so depending on the student's screen aspect ratio
+  // there can be black letterbox bars above/below or left/right of the
+  // picture. Normalizing to the rendered picture (not the element box)
+  // means the same relative spot lands in the same place on the teacher's
+  // canvas regardless of the student's device shape.
+  let confusionActive = false;
+  let dragStart = null;    // {x, y} in viewport px, where the drag began
+  let dragLastRect = null; // last on-screen box rect (viewport px), for sending
+
+  function getVideoContentRect() {
+    const rect = remoteVideo.getBoundingClientRect();
+    const vw = remoteVideo.videoWidth;
+    const vh = remoteVideo.videoHeight;
+    if (!vw || !vh) return rect; // no frame yet — fall back to full element
+
+    const elementRatio = rect.width / rect.height;
+    const videoRatio = vw / vh;
+
+    let contentWidth, contentHeight, offsetX, offsetY;
+    if (videoRatio > elementRatio) {
+      contentWidth = rect.width;
+      contentHeight = rect.width / videoRatio;
+      offsetX = 0;
+      offsetY = (rect.height - contentHeight) / 2;
+    } else {
+      contentHeight = rect.height;
+      contentWidth = rect.height * videoRatio;
+      offsetY = 0;
+      offsetX = (rect.width - contentWidth) / 2;
+    }
+    return {
+      left: rect.left + offsetX,
+      top: rect.top + offsetY,
+      width: contentWidth,
+      height: contentHeight,
+    };
+  }
+
+  function toNormalized(clientX, clientY, contentRect) {
+    const x = (clientX - contentRect.left) / contentRect.width;
+    const y = (clientY - contentRect.top) / contentRect.height;
+    return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+  }
+
+  const MIN_BOX_FRACTION = 0.05; // a bare tap still marks a visible, sendable area
+
+  function enterConfusionMode() {
+    if (!confusionOverlay) return;
+    confusionActive = true;
+    dragStart = null;
+    dragLastRect = null;
+    confusionBox.classList.remove("show");
+    confusionActions.classList.remove("show");
+    confusionOverlay.classList.add("active");
+    confusedBtn.classList.add("confused-active");
+  }
+
+  function exitConfusionMode() {
+    if (!confusionOverlay) return;
+    confusionActive = false;
+    dragStart = null;
+    dragLastRect = null;
+    confusionOverlay.classList.remove("active");
+    confusionBox.classList.remove("show");
+    confusionActions.classList.remove("show");
+    confusedBtn.classList.remove("confused-active");
+  }
+
+  function updateBoxFromDrag(clientX, clientY) {
+    const contentRect = getVideoContentRect();
+    const x1 = Math.min(dragStart.x, clientX);
+    const y1 = Math.min(dragStart.y, clientY);
+    let x2 = Math.max(dragStart.x, clientX);
+    let y2 = Math.max(dragStart.y, clientY);
+
+    const minSide = contentRect.width * MIN_BOX_FRACTION;
+    if (x2 - x1 < minSide) {
+      const cx = (x1 + x2) / 2;
+      x2 = cx + minSide / 2;
+    }
+    if (y2 - y1 < minSide) {
+      const cy = (y1 + y2) / 2;
+      y2 = cy + minSide / 2;
+    }
+
+    const rect = { left: x1, top: y1, width: x2 - x1, height: y2 - y1 };
+    dragLastRect = rect;
+
+    confusionBox.style.left   = rect.left + "px";
+    confusionBox.style.top    = rect.top + "px";
+    confusionBox.style.width  = rect.width + "px";
+    confusionBox.style.height = rect.height + "px";
+    confusionBox.classList.add("show");
+  }
+
+  if (confusionOverlay) {
+    confusionOverlay.addEventListener("pointerdown", (e) => {
+      dragStart = { x: e.clientX, y: e.clientY };
+      confusionActions.classList.remove("show");
+      updateBoxFromDrag(e.clientX, e.clientY);
+    });
+
+    confusionOverlay.addEventListener("pointermove", (e) => {
+      if (!dragStart) return;
+      updateBoxFromDrag(e.clientX, e.clientY);
+    });
+
+    confusionOverlay.addEventListener("pointerup", (e) => {
+      if (!dragStart) return;
+      updateBoxFromDrag(e.clientX, e.clientY);
+      dragStart = null;
+      confusionActions.classList.add("show");
+    });
+
+    confusionCancelBtn.addEventListener("click", exitConfusionMode);
+
+    confusionSendBtn.addEventListener("click", () => {
+      if (!dragLastRect || !socket || !socket.connected || !roomId) {
+        exitConfusionMode();
+        return;
+      }
+      const contentRect = getVideoContentRect();
+      const topLeft = toNormalized(dragLastRect.left, dragLastRect.top, contentRect);
+      const bottomRight = toNormalized(
+        dragLastRect.left + dragLastRect.width,
+        dragLastRect.top + dragLastRect.height,
+        contentRect
+      );
+
+      socket.emit("mark-confused", {
+        roomId,
+        x: topLeft.x,
+        y: topLeft.y,
+        w: Math.max(0.01, bottomRight.x - topLeft.x),
+        h: Math.max(0.01, bottomRight.y - topLeft.y),
+      });
+
+      showBanner("😵 Marked — the teacher can see exactly where.");
+      exitConfusionMode();
+
+      confusedBtn.classList.add("confused-flash");
+      confusedCooldown = true;
+      setTimeout(() => {
+        confusedBtn.classList.remove("confused-flash");
+        confusedCooldown = false;
+      }, 3000);
+    });
+  }
+
   // ── Auto-fill room code from URL ?room=ROOMCODE ───────────────────────
   const urlParams = new URLSearchParams(window.location.search);
   const roomParam = urlParams.get("room");
@@ -573,24 +884,17 @@
 
   micBtn.addEventListener("click", toggleMic);
 
-  // Confused button — momentary signal, not a toggled on/off state like
-  // raise-hand. A short cooldown stops a nervous double-tap from spamming
-  // the teacher's heatmap with duplicate signals for the same moment.
+  // Confused button opens the drag-to-select overlay (see above) instead of
+  // firing blind — the whole point is telling the teacher exactly WHERE,
+  // not just that a tap happened. A short cooldown after sending stops a
+  // nervous double-tap from spamming duplicate signals for the same moment.
   let confusedCooldown = false;
   if (confusedBtn) {
     confusedBtn.addEventListener("click", () => {
       if (!socket || !socket.connected || !roomId) return;
       if (confusedCooldown) return;
-
-      socket.emit("mark-confused", { roomId });
-      showBanner("😵 Marked — the teacher will see where this happened.");
-
-      confusedBtn.classList.add("confused-flash");
-      confusedCooldown = true;
-      setTimeout(() => {
-        confusedBtn.classList.remove("confused-flash");
-        confusedCooldown = false;
-      }, 3000);
+      if (confusionActive) { exitConfusionMode(); return; }
+      enterConfusionMode();
     });
   }
 
@@ -615,6 +919,9 @@
   if (chatInput) chatInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") sendChatMessage();
   });
+
+  if (pollToggleBtn) pollToggleBtn.addEventListener("click", () => setPollOpen(!pollOpen));
+  if (pollCloseBtn) pollCloseBtn.addEventListener("click", () => setPollOpen(false));
 
   fullscreenBtn.addEventListener("click", () => {
     if (remoteVideo.requestFullscreen) remoteVideo.requestFullscreen();

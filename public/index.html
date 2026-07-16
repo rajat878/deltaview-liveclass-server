@@ -227,6 +227,47 @@
       background:rgba(255,71,87,.18);border-color:rgba(255,71,87,.6);color:var(--red);
       transition:background .15s, border-color .15s, color .15s;
     }
+    #confused-btn.confused-active{
+      background:rgba(255,71,87,.28);border-color:var(--red);color:var(--red);
+    }
+
+    /* ── Confused area-select overlay ────────────────────────────────
+       Lets the student drag directly over the broadcast to mark exactly
+       where they're confused, instead of a blind tap that only signals
+       *when*, not *where*. */
+    #confusion-overlay{
+      position:fixed;inset:0;z-index:15;touch-action:none;
+      background:rgba(10,14,23,.2);display:none;
+    }
+    #confusion-overlay.active{display:block;}
+    #confusion-hint{
+      position:fixed;top:calc(52px + var(--safe-t));left:12px;right:12px;z-index:16;
+      text-align:center;font-size:.82rem;padding:10px 14px;border-radius:10px;
+      background:var(--console);color:var(--paper);border:1px solid var(--line);
+      font-weight:500;
+    }
+    #confusion-box{
+      position:absolute;border:2px solid var(--red);border-radius:8px;
+      background:rgba(255,71,87,.2);
+      box-shadow:0 0 0 9999px rgba(10,14,23,.4);
+      display:none;
+    }
+    #confusion-box.show{display:block;}
+    #confusion-box .handle{
+      position:absolute;width:20px;height:20px;right:-10px;bottom:-10px;
+      border-radius:50%;background:var(--red);border:2px solid #fff;
+    }
+    #confusion-actions{
+      position:fixed;left:0;right:0;bottom:calc(16px + var(--safe-b));z-index:16;
+      display:none;justify-content:center;gap:12px;padding:0 20px;
+    }
+    #confusion-actions.show{display:flex;}
+    #confusion-actions button{
+      width:auto;flex:none;padding:13px 26px;border-radius:13px;font-weight:600;font-size:.9rem;
+      border:1px solid var(--line);color:var(--paper);box-shadow:none;
+    }
+    #confusion-send-btn{background:var(--red);border-color:var(--red);}
+    #confusion-cancel-btn{background:var(--console);}
 
     #mic-btn{flex:1.3;}
     #mic-btn:disabled{background:var(--panel);color:#4B5573;box-shadow:none;}
@@ -335,6 +376,95 @@
     }
     #chat-send-btn:active{transform:translateY(1px);}
 
+    /* ── Poll drawer (mirrors the chat drawer's structure/animation) ── */
+    #poll-toggle-btn{position:relative;}
+    #poll-toggle-btn .poll-badge{
+      position:absolute;top:-4px;right:-4px;min-width:16px;height:16px;
+      border-radius:8px;background:var(--gold);color:#1A1204;
+      font-family:var(--font-mono);font-size:.6rem;font-weight:700;
+      display:flex;align-items:center;justify-content:center;padding:0 4px;
+      box-shadow:0 0 0 2px var(--ink);
+    }
+    #poll-toggle-btn .poll-badge.hidden{display:none;}
+
+    #poll-drawer{
+      position:fixed;left:0;right:0;bottom:0;z-index:20;
+      max-height:70vh;display:flex;flex-direction:column;
+      background:var(--panel);border-top:1px solid var(--line);
+      border-radius:18px 18px 0 0;
+      box-shadow:0 -8px 30px rgba(0,0,0,.5);
+      transform:translateY(100%);transition:transform .28s ease;
+    }
+    #poll-drawer.open{transform:translateY(0);}
+    .poll-drawer-head{
+      display:flex;align-items:center;gap:10px;
+      padding:14px 16px 10px;border-bottom:1px solid var(--line);
+    }
+    .poll-drawer-head h3{
+      font-family:var(--font-display);font-size:.92rem;font-weight:700;
+      color:var(--paper);flex:1;
+    }
+    #poll-close-btn{
+      width:28px;height:28px;border-radius:8px;flex:none;
+      background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.12);
+      color:var(--paper);font-size:.9rem;display:flex;align-items:center;justify-content:center;padding:0;
+    }
+    #poll-body{
+      flex:1;overflow-y:auto;padding:14px 16px calc(16px + var(--safe-b));
+      -webkit-overflow-scrolling:touch;
+    }
+    .poll-empty{color:var(--fog);font-size:.85rem;text-align:center;padding:30px 0;}
+    .poll-question{
+      font-family:var(--font-display);font-weight:700;font-size:1rem;
+      color:var(--paper);margin-bottom:14px;line-height:1.35;
+    }
+    .poll-ended-tag{
+      display:inline-block;font-family:var(--font-mono);font-size:.62rem;
+      letter-spacing:.08em;text-transform:uppercase;color:var(--fog);
+      background:var(--console);border:1px solid var(--line);
+      border-radius:6px;padding:3px 7px;margin-bottom:10px;
+    }
+
+    /* Voting state: tappable option rows, one active selection */
+    .poll-option-btn{
+      width:100%;text-align:left;padding:13px 14px;margin-bottom:8px;
+      border-radius:12px;background:var(--console);border:1.5px solid var(--line);
+      color:var(--paper);font-size:.9rem;font-weight:500;
+      display:flex;align-items:center;gap:10px;
+    }
+    .poll-option-btn .opt-dot{
+      width:16px;height:16px;border-radius:50%;flex:none;
+      border:2px solid var(--fog);
+    }
+    .poll-option-btn.selected{border-color:var(--gold);background:rgba(242,177,52,.1);}
+    .poll-option-btn.selected .opt-dot{border-color:var(--gold);background:var(--gold);}
+    #poll-vote-btn{margin-top:6px;}
+    #poll-vote-btn:disabled{opacity:.45;}
+
+    /* Results state: option label + percentage bar + count, one row each */
+    .poll-result-row{margin-bottom:12px;}
+    .poll-result-top{
+      display:flex;justify-content:space-between;align-items:baseline;
+      margin-bottom:5px;gap:8px;
+    }
+    .poll-result-label{font-size:.86rem;color:var(--paper);font-weight:500;}
+    .poll-result-mine{color:var(--gold);}
+    .poll-result-count{
+      font-family:var(--font-mono);font-size:.72rem;color:var(--fog);flex:none;
+    }
+    .poll-bar-track{
+      height:9px;border-radius:5px;background:var(--console);
+      border:1px solid var(--line);overflow:hidden;
+    }
+    .poll-bar-fill{
+      height:100%;border-radius:5px;background:var(--gold);
+      transition:width .35s ease;
+    }
+    .poll-total-votes{
+      font-family:var(--font-mono);font-size:.7rem;color:var(--fog);
+      text-align:center;margin-top:6px;
+    }
+
     /* ── Ended screen ─────────────────────────────────────────────── */
     .offair-sign{
       display:inline-flex;align-items:center;gap:8px;
@@ -386,6 +516,9 @@
     <span class="onair-sign"><span class="dot"></span>On air</span>
     <span id="channel-readout"></span>
     <span class="bar-spacer"></span>
+    <button id="poll-toggle-btn" class="icon-btn" aria-label="Poll">
+      📊<span id="poll-badge" class="poll-badge hidden">!</span>
+    </button>
     <button id="chat-toggle-btn" class="icon-btn" aria-label="Chat">
       💬<span id="chat-badge" class="chat-badge hidden">0</span>
     </button>
@@ -393,6 +526,17 @@
   </div>
   <div id="status-banner"></div>
   <video id="remote-video" autoplay playsinline></video>
+
+  <!-- Drag over the exact spot you're confused about; only shown while marking. -->
+  <div id="confusion-overlay">
+    <div id="confusion-hint">Drag over the exact spot you're confused about</div>
+    <div id="confusion-box"><div class="handle"></div></div>
+  </div>
+  <div id="confusion-actions">
+    <button id="confusion-send-btn">😵 Send</button>
+    <button id="confusion-cancel-btn">Cancel</button>
+  </div>
+
   <div class="console-wrap">
     <div class="console-label">Studio console</div>
     <div class="console">
@@ -412,6 +556,14 @@
       <input id="chat-input" type="text" maxlength="500" placeholder="Message the class…" autocomplete="off" />
       <button id="chat-send-btn" aria-label="Send">➤</button>
     </div>
+  </div>
+
+  <div id="poll-drawer">
+    <div class="poll-drawer-head">
+      <h3>Poll</h3>
+      <button id="poll-close-btn" class="icon-btn" aria-label="Close poll">✕</button>
+    </div>
+    <div id="poll-body"></div>
   </div>
 </div>
 
