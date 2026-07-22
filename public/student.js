@@ -226,7 +226,6 @@
     renderPoll();
   }
 
-  // Renders whichever state applies: no poll yet, still voting (not voted),
   // or results (voted already, or the poll has ended). Fully re-rendered on
   // every update rather than patched incrementally — a poll changes shape
   // rarely enough (once per start/vote/end) that this is simpler and can't
