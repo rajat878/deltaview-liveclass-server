@@ -61,6 +61,11 @@
   const pollCloseBtn  = document.getElementById("poll-close-btn");
   const pollBodyEl    = document.getElementById("poll-body");
 
+  // ── Camera / video conference (optional; decorative only — page still
+  // works if these are missing) ──
+  const cameraToggleBtn = document.getElementById("camera-toggle-btn");
+  const cameraStrip     = document.getElementById("camera-strip");
+
   // ── Fail loudly (but not silently-dead) if the HTML and this script are
   // out of sync — e.g. an element was renamed/removed in one file but not
   // the other. Previously a single null here (used later, e.g. at
@@ -93,6 +98,29 @@
   let chatOpen          = false;
   let unreadChatCount    = 0;
   let mySocketId        = null; // set once "connect" fires; used to tell "mine" bubbles apart
+
+  // ── Camera (video conference) state ──────────────────────────────────
+  let teacherId              = null; // captured from the sender of the FIRST offer we get, which is always the teacher's
+  let teacherCameraTransceiver = null; // recvonly m-line (index 3) carrying the teacher's own camera
+  let ownCameraTransceiver     = null; // reserved m-line (index 4) we use to send OUR camera to the teacher
+  let ownCameraTrack          = null; // our real getUserMedia video track, once captured
+  let cameraAllowed          = false; // has the teacher granted this student camera permission?
+  let cameraRequested        = false; // have we already asked this session?
+  let ownCameraOn            = false;
+
+  // Student-to-student mesh — one PeerConnection per other student in the
+  // room, discovered via existing-peers (on join) / peer-joined / peer-left.
+  const peerConnections   = new Map(); // studentId -> RTCPeerConnection
+  const peerCameraSenders = new Map(); // studentId -> RTCRtpSender for that peer's video m-line
+  const peerNames         = new Map(); // studentId -> display name, best-effort
+
+  // Camera tile bookkeeping — kept separate from the tracks themselves
+  // because a track can arrive (e.g. the teacher's reserved m-line, or a
+  // freshly-negotiated mesh connection) well before that participant has
+  // actually turned their camera on. A tile is only ever shown when BOTH a
+  // track is known AND the corresponding "camera-state" says it's on.
+  const participantTracks = new Map(); // participantId -> MediaStreamTrack
+  const participantOn     = new Map(); // participantId -> boolean
 
   // ── Poll state ──────────────────────────────────────────────────────
   // activePoll is null when no poll has run yet this session; otherwise:
@@ -297,6 +325,246 @@
     renderPoll();
   }
 
+  // ── Camera helpers ────────────────────────────────────────────────────
+
+  // A 1x1 black canvas, captured as a MediaStreamTrack. Used to "seal" a
+  // reserved video m-line as active (sendonly) the moment a PeerConnection
+  // is created, well before the student has camera permission or has
+  // turned their camera on. This mirrors the exact bug already hit (and
+  // fixed) for the mic m-line: a transceiver with NO track attached when
+  // the answer/offer is created negotiates as "a=inactive", and attaching
+  // a real track afterward via replaceTrack() does nothing — the line is
+  // already sealed. A placeholder track avoids that without requiring an
+  // actual camera-permission prompt at join time (unlike the mic fix,
+  // which does prompt early — camera access is opt-in via "ask to share"
+  // and shouldn't be requested before the teacher has even approved it).
+  function createPlaceholderVideoTrack() {
+    const canvas = document.createElement("canvas");
+    canvas.width = 2;
+    canvas.height = 2;
+    const ctx = canvas.getContext("2d");
+    ctx.fillStyle = "black";
+    ctx.fillRect(0, 0, 2, 2);
+    const stream = canvas.captureStream(1); // 1fps is plenty — it's never actually shown
+    return stream.getVideoTracks()[0];
+  }
+
+  function tileLabel(participantId) {
+    if (participantId === "self") return "You";
+    if (participantId === teacherId) return "Teacher";
+    return peerNames.get(participantId) || "Classmate";
+  }
+
+  function removeParticipantTile(participantId) {
+    if (cameraStrip) {
+      const tile = cameraStrip.querySelector(`[data-pid="${cssEscapeId(participantId)}"]`);
+      if (tile) tile.remove();
+    }
+  }
+
+  // Escapes a socket.id (or "self"/"teacher") for safe use in a CSS
+  // attribute selector — ids are opaque strings we don't fully control.
+  function cssEscapeId(id) {
+    return String(id).replace(/["\\]/g, "\\$&");
+  }
+
+  function renderParticipantTile(participantId) {
+    const on = !!participantOn.get(participantId);
+    const track = participantTracks.get(participantId);
+
+    if (!cameraStrip || !on || !track) {
+      removeParticipantTile(participantId);
+      return;
+    }
+
+    let tile = cameraStrip.querySelector(`[data-pid="${cssEscapeId(participantId)}"]`);
+    if (!tile) {
+      tile = document.createElement("div");
+      tile.className = "cam-tile " + (participantId === "self" ? "cam-tile-self" : "cam-tile-remote");
+      tile.dataset.pid = participantId;
+      tile.innerHTML = '<video autoplay playsinline muted></video><span class="cam-tile-label"></span>';
+      cameraStrip.appendChild(tile);
+    }
+    const videoEl = tile.querySelector("video");
+    // Rebuild the MediaStream only if the underlying track actually
+    // changed, so we're not needlessly restarting playback on every
+    // unrelated re-render.
+    if (!videoEl.srcObject || videoEl.srcObject.getVideoTracks()[0] !== track) {
+      videoEl.srcObject = new MediaStream([track]);
+      videoEl.play().catch(() => {});
+    }
+    tile.querySelector(".cam-tile-label").textContent = tileLabel(participantId);
+  }
+
+  function setParticipantTrack(participantId, track, name) {
+    participantTracks.set(participantId, track);
+    if (name) peerNames.set(participantId, name);
+    renderParticipantTile(participantId);
+  }
+
+  function setParticipantOn(participantId, on) {
+    participantOn.set(participantId, on);
+    renderParticipantTile(participantId);
+  }
+
+  function clearParticipantTile(participantId) {
+    participantTracks.delete(participantId);
+    participantOn.delete(participantId);
+    removeParticipantTile(participantId);
+  }
+
+  function setCameraButtonState() {
+    if (!cameraToggleBtn) return;
+    cameraToggleBtn.classList.toggle("cam-on", ownCameraOn);
+    cameraToggleBtn.classList.toggle("cam-requested", cameraRequested && !cameraAllowed);
+    cameraToggleBtn.setAttribute(
+      "aria-label",
+      !cameraAllowed ? (cameraRequested ? "Camera request pending" : "Ask to share camera")
+                     : (ownCameraOn ? "Turn camera off" : "Turn camera on")
+    );
+  }
+
+  // Tapping the camera icon either (a) sends the one-time request to the
+  // teacher if we don't have permission yet, or (b) flips our own camera
+  // on/off once we do.
+  async function toggleOwnCamera() {
+    if (!socket || !socket.connected || !roomId) return;
+
+    if (!cameraAllowed) {
+      if (!cameraRequested) {
+        socket.emit("request-camera", { roomId });
+        cameraRequested = true;
+        showBanner("📷 Camera request sent — waiting for the teacher.");
+        setCameraButtonState();
+      } else {
+        showBanner("📷 Still waiting for the teacher to allow your camera.");
+      }
+      return;
+    }
+
+    if (!ownCameraOn) {
+      if (!ownCameraTrack) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({
+            video: { facingMode: "user", width: { ideal: 320 }, height: { ideal: 240 } },
+          });
+          ownCameraTrack = stream.getVideoTracks()[0];
+        } catch (e) {
+          logToTeacher("Could not access camera", e);
+          showBanner("⚠️ Could not access your camera.");
+          return;
+        }
+      }
+
+      // Swap the placeholder (or a stale track, on rejoin) for the real
+      // camera on every m-line that's carrying our video — the reserved
+      // slot to the teacher, and every open mesh connection to a classmate.
+      if (ownCameraTransceiver) {
+        await ownCameraTransceiver.sender.replaceTrack(ownCameraTrack);
+        ownCameraTransceiver.direction = "sendonly";
+      }
+      peerCameraSenders.forEach((sender) => {
+        sender.replaceTrack(ownCameraTrack).catch((e) => logToTeacher("replaceTrack to peer failed", e));
+      });
+
+      ownCameraTrack.enabled = true;
+      ownCameraOn = true;
+      socket.emit("camera-state", { roomId, on: true });
+      setParticipantTrack("self", ownCameraTrack, "You");
+      setParticipantOn("self", true);
+    } else {
+      ownCameraTrack.enabled = false;
+      ownCameraOn = false;
+      socket.emit("camera-state", { roomId, on: false });
+      setParticipantOn("self", false);
+    }
+    setCameraButtonState();
+  }
+
+  // ── Student-to-student mesh ──────────────────────────────────────────
+  // One direct PeerConnection per other student, carrying just a single
+  // video m-line each way for camera tiles (mic/screen only ever flow
+  // through the teacher). The newcomer always initiates: on join we're
+  // handed the roster of who's already here (existing-peers) and offer to
+  // each of them; everyone already in the room just gets told a peer
+  // joined and waits for that incoming offer.
+  function createPeerConnectionTo(peerId, peerName, isInitiator) {
+    if (peerConnections.has(peerId)) return peerConnections.get(peerId);
+    if (peerName) peerNames.set(peerId, peerName);
+
+    const ppc = new RTCPeerConnection(RTC_CONFIG);
+    peerConnections.set(peerId, ppc);
+
+    ppc.onicecandidate = (event) => {
+      if (!event.candidate) return;
+      socket.emit("ice-candidate", {
+        targetId: peerId,
+        roomId,
+        candidate: {
+          candidate:     event.candidate.candidate,
+          sdpMid:        event.candidate.sdpMid,
+          sdpMLineIndex: event.candidate.sdpMLineIndex,
+        },
+      });
+    };
+
+    ppc.ontrack = (event) => {
+      if (event.track.kind !== "video") return;
+      setParticipantTrack(peerId, event.track, peerNames.get(peerId));
+    };
+
+    ppc.onconnectionstatechange = () => {
+      if (ppc.connectionState === "failed" || ppc.connectionState === "closed") {
+        closePeerConnection(peerId);
+      }
+    };
+
+    // Single sendrecv video m-line, sealed immediately with a placeholder
+    // (see createPlaceholderVideoTrack) so it's already active if/when we
+    // turn our camera on later — no renegotiation needed either direction.
+    const transceiver = ppc.addTransceiver("video", { direction: "sendrecv" });
+    peerCameraSenders.set(peerId, transceiver.sender);
+    transceiver.sender.replaceTrack(ownCameraTrack || createPlaceholderVideoTrack());
+
+    if (isInitiator) {
+      ppc.createOffer()
+        .then((offer) => ppc.setLocalDescription(offer).then(() => offer))
+        .then((offer) => {
+          socket.emit("offer", { targetId: peerId, roomId, sdp: { type: offer.type, sdp: offer.sdp } });
+        })
+        .catch((e) => logToTeacher("Failed to offer peer", peerId, e));
+    }
+
+    return ppc;
+  }
+
+  async function handlePeerOffer(peerId, sdpData) {
+    const ppc = createPeerConnectionTo(peerId, peerNames.get(peerId), false);
+    try {
+      await ppc.setRemoteDescription(new RTCSessionDescription({ type: "offer", sdp: sdpData.sdp }));
+      const answer = await ppc.createAnswer();
+      await ppc.setLocalDescription(answer);
+      socket.emit("answer", { targetId: peerId, roomId, sdp: { type: answer.type, sdp: answer.sdp } });
+    } catch (e) {
+      logToTeacher("Failed to answer peer offer from", peerId, e);
+    }
+  }
+
+  function closePeerConnection(peerId) {
+    const ppc = peerConnections.get(peerId);
+    if (ppc) {
+      try { ppc.close(); } catch (e) { /* already closed */ }
+    }
+    peerConnections.delete(peerId);
+    peerCameraSenders.delete(peerId);
+    peerNames.delete(peerId);
+    clearParticipantTile(peerId);
+  }
+
+  function closeAllPeerConnections() {
+    Array.from(peerConnections.keys()).forEach(closePeerConnection);
+  }
+
   // ── Relay console logs to the teacher's app via the signaling server,
   // so they show up directly in Android Studio's Logcat (tag:LiveClassManager)
   // without needing chrome://inspect USB debugging on the student's phone.
@@ -384,6 +652,7 @@
     resetHandAndSpeakState();
     resetChatUI();
     resetPollUI();
+    resetCameraState();
     show(waitingScreen);
 
     const waitingSubtitle = waitingScreen.querySelector(".subtitle");
@@ -519,15 +788,80 @@
       showBanner("🔇 The teacher turned off your mic access.", "revoked");
     });
 
+    // ── Camera permission (mirrors speak-allowed/speak-muted above) ────
+    socket.on("camera-allowed", () => {
+      logToTeacher("🎥 Teacher allowed your camera");
+      cameraAllowed = true;
+      setCameraButtonState();
+      showBanner("🎥 The teacher allowed your camera — tap it to turn on.", "granted");
+    });
+
+    socket.on("camera-revoked", () => {
+      logToTeacher("🚫 Teacher turned off your camera access");
+      cameraAllowed = false;
+      cameraRequested = false;
+      if (ownCameraTrack) ownCameraTrack.enabled = false;
+      ownCameraOn = false;
+      setParticipantOn("self", false);
+      setCameraButtonState();
+      showBanner("🚫 The teacher turned off your camera access.", "revoked");
+    });
+
+    // Broadcast whenever ANY participant's camera (teacher, us, or a
+    // classmate) turns on/off — just the "is it worth rendering" signal;
+    // the actual frames travel over whichever PeerConnection already
+    // carries that participant's track.
+    socket.on("camera-state", ({ participantId, on }) => {
+      if (participantId === mySocketId) return; // our own toggle already updates locally
+      setParticipantOn(participantId, on);
+    });
+
+    // ── Student-to-student mesh discovery ───────────────────────────────
+    socket.on("existing-peers", ({ peers }) => {
+      (peers || []).forEach((p) => createPeerConnectionTo(p.studentId, p.name, true));
+    });
+
+    socket.on("peer-joined", ({ studentId, name }) => {
+      if (name) peerNames.set(studentId, name);
+      // No PeerConnection created yet — we wait for their incoming offer
+      // (routed below) rather than racing to create one ourselves.
+    });
+
+    socket.on("peer-left", ({ studentId }) => {
+      closePeerConnection(studentId);
+    });
+
+    // The very first offer we ever receive is always from the teacher
+    // (sent immediately on join, ahead of any mesh negotiation). Every
+    // subsequent offer with a different sender is a classmate's mesh offer.
     socket.on("offer", async (data) => {
-      logToTeacher("📨 Offer received");
-      await handleOffer(data.senderId, data.roomId, data.sdp);
+      if (teacherId === null || data.senderId === teacherId) {
+        teacherId = data.senderId;
+        logToTeacher("📨 Offer received (teacher)");
+        await handleOffer(data.senderId, data.roomId, data.sdp);
+      } else {
+        logToTeacher("📨 Offer received (peer)", data.senderId);
+        await handlePeerOffer(data.senderId, data.sdp);
+      }
+    });
+
+    // Answers only ever come back from a classmate we offered to first —
+    // the teacher connection is answered by US, never the other way round.
+    socket.on("answer", async (data) => {
+      const ppc = peerConnections.get(data.senderId);
+      if (!ppc) return;
+      try {
+        await ppc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: data.sdp.sdp }));
+      } catch (e) {
+        logToTeacher("Failed to set remote answer from peer", data.senderId, e);
+      }
     });
 
     socket.on("ice-candidate", async (data) => {
-      if (!pc) return;
+      const targetPc = data.senderId === teacherId ? pc : peerConnections.get(data.senderId);
+      if (!targetPc) return;
       try {
-        await pc.addIceCandidate(new RTCIceCandidate({
+        await targetPc.addIceCandidate(new RTCIceCandidate({
           candidate:     data.candidate.candidate,
           sdpMid:        data.candidate.sdpMid,
           sdpMLineIndex: data.candidate.sdpMLineIndex,
@@ -547,11 +881,36 @@
     if (pc) pc.close();
     pc = new RTCPeerConnection(RTC_CONFIG);
 
+    // The teacher's screen video, teacher audio, AND the teacher's own
+    // camera all share the same stream label ("live-stream") on the wire,
+    // so event.streams[0] alone can't tell them apart — a MediaStream with
+    // two video tracks in it renders ambiguously (browsers pick one, not
+    // necessarily the one we want). Instead we identify each incoming
+    // track by its transceiver's position, which is fixed by the order
+    // LiveClassManager.kt adds them in: [0]=screen video, [1]=teacher
+    // audio, [2]=our mic (send-only, no incoming track), [3]=teacher
+    // camera, [4]=our camera (send-only, no incoming track). Screen video
+    // and teacher audio are combined into one manually-built stream for
+    // the main <video>; the teacher's camera gets its own tile.
+    let mainStream = null;
     pc.ontrack = (event) => {
-      logToTeacher("🎥 Remote stream received");
-      remoteVideo.srcObject = event.streams[0];
-      remoteVideo.play().catch(console.error);
-      show(liveScreen);
+      const transceivers = pc.getTransceivers();
+      const idx = transceivers.indexOf(event.transceiver);
+
+      if (idx === 3) {
+        logToTeacher("🎥 Teacher camera track received");
+        setParticipantTrack(teacherIdArg, event.track, "Teacher");
+        return;
+      }
+
+      logToTeacher("🎥 Remote stream track received:", event.track.kind);
+      if (!mainStream) mainStream = new MediaStream();
+      mainStream.addTrack(event.track);
+      remoteVideo.srcObject = mainStream;
+      if (event.track.kind === "video") {
+        remoteVideo.play().catch(console.error);
+        show(liveScreen);
+      }
     };
 
     pc.onicecandidate = (event) => {
@@ -592,6 +951,24 @@
         transceivers.map((t, i) => `[${i}] ${t.receiver.track?.kind} dir=${t.direction} mid=${t.mid}`).join(", ")
       );
       micTransceiver = transceivers[2] || null;
+      teacherCameraTransceiver = transceivers[3] || null;
+      ownCameraTransceiver = transceivers[4] || null;
+
+      // Seal our camera m-line as active right away with a placeholder
+      // track (see createPlaceholderVideoTrack for why) — no camera
+      // permission prompt happens here, just a synthetic black frame, so
+      // this costs nothing UX-wise even for students who never touch the
+      // camera feature this session.
+      if (ownCameraTransceiver) {
+        try {
+          await ownCameraTransceiver.sender.replaceTrack(ownCameraTrack || createPlaceholderVideoTrack());
+          ownCameraTransceiver.direction = "sendonly";
+          logToTeacher("Camera m-line pre-sealed. mid:", ownCameraTransceiver.mid);
+        } catch (e) {
+          logToTeacher("Failed to pre-seal camera m-line", e);
+          ownCameraTransceiver = null;
+        }
+      }
 
       // BUG FIX: previously we only requested the mic + attached it the
       // FIRST time the student tapped "Mic on" — which happens well after
@@ -669,8 +1046,29 @@
     if (pc) { pc.close(); pc = null; }
     if (remoteVideo) { remoteVideo.pause(); remoteVideo.srcObject = null; }
     micTransceiver = null;
+    teacherCameraTransceiver = null;
+    ownCameraTransceiver = null;
+    teacherId = null;
     resetHandAndSpeakState();
+    resetCameraState();
+    closeAllPeerConnections();
     if (typeof exitConfusionMode === "function" && confusionActive) exitConfusionMode();
+  }
+
+  // Resets everything camera-related for a fresh join/rejoin. Deliberately
+  // does NOT dispose ownCameraTrack — if the student already granted camera
+  // permission once this page load, there's no reason to make the browser
+  // ask again on a reconnect; it just gets re-attached (still muted) the
+  // next time a PeerConnection is set up.
+  function resetCameraState() {
+    cameraAllowed = false;
+    cameraRequested = false;
+    ownCameraOn = false;
+    if (ownCameraTrack) ownCameraTrack.enabled = false;
+    participantTracks.clear();
+    participantOn.clear();
+    if (cameraStrip) cameraStrip.innerHTML = "";
+    setCameraButtonState();
   }
 
   function setMicButtonState(on) {
@@ -922,6 +1320,9 @@
 
   if (pollToggleBtn) pollToggleBtn.addEventListener("click", () => setPollOpen(!pollOpen));
   if (pollCloseBtn) pollCloseBtn.addEventListener("click", () => setPollOpen(false));
+
+  if (cameraToggleBtn) cameraToggleBtn.addEventListener("click", toggleOwnCamera);
+  setCameraButtonState();
 
   fullscreenBtn.addEventListener("click", () => {
     if (remoteVideo.requestFullscreen) remoteVideo.requestFullscreen();
