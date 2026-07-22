@@ -158,6 +158,8 @@ rooms[roomId] = {
   attendanceRows: {},          // studentId (socket.id) -> attendance row id, so disconnect can close it out
   raisedHands: new Set(),     // studentIds with hand currently raised
   allowedSpeakers: new Set(), // studentIds the teacher has granted mic permission to
+  allowedCameras: new Set(),  // studentIds the teacher has granted camera permission to
+  activeCameras: new Set(),   // participantIds (students + "teacher") whose camera is currently on
   chatHistory: [],            // rolling log of { id, senderId, senderName, role, text, ts }, capped at CHAT_HISTORY_LIMIT
   confusionEvents: [],        // rolling log of { studentId, ts }, capped at CONFUSION_HISTORY_LIMIT — used to rebuild the heatmap if the teacher app reconnects mid-session
   poll: null,                 // { question, options: [{id, text}], votes: { studentId: optionId }, active, startedAt } — only one poll live at a time; a new "start-poll" simply replaces it
@@ -214,6 +216,19 @@ rooms[roomId] = {
       studentName: displayName || "Unnamed student",
     });
     room.attendanceRows[socket.id] = attendanceRowId;
+
+    // Video-conference mesh discovery. room.students already includes this
+    // socket (pushed above), so filter self out for the "who's already here"
+    // list sent back to the newcomer — they'll create an offer to each one.
+    // Existing students get "peer-joined" so they know to expect an
+    // incoming offer from this new id (no offer of their own needed).
+    const existingPeers = room.students
+      .filter((id) => id !== socket.id)
+      .map((id) => ({ studentId: id, name: (room.studentNames && room.studentNames[id]) || null }));
+    socket.emit("existing-peers", { peers: existingPeers });
+    existingPeers.forEach(({ studentId }) => {
+      io.to(studentId).emit("peer-joined", { studentId: socket.id, name: displayName });
+    });
 
     console.log(
       `👨‍🎓 Student ${socket.id} (${displayName || "no name given"}) joined ${roomId}` +
@@ -424,6 +439,76 @@ socket.on("mute-student", ({ roomId, studentId }) => {
 });
 
 // ==========================
+// Camera permission (video conference) — mirrors the mic allow/mute flow
+// above. A student must ask, the teacher grants/revokes, and only then may
+// that student's "camera-state: on" be accepted below. The teacher's own
+// camera needs no permission step.
+// ==========================
+socket.on("request-camera", ({ roomId }) => {
+  const room = rooms[roomId];
+  if (!room) return;
+  if (!room.students.includes(socket.id)) return; // only a recognized student of this room
+
+  const name = (room.studentNames && room.studentNames[socket.id]) || null;
+  console.log(`🎥 Camera requested: ${socket.id} (Room: ${roomId})`);
+
+  io.to(room.teacher).emit("camera-requested", { studentId: socket.id, name });
+});
+
+socket.on("allow-camera", ({ roomId, studentId }) => {
+  const room = rooms[roomId];
+  if (!room || socket.id !== room.teacher) return; // only the teacher may grant this
+
+  room.allowedCameras.add(studentId);
+
+  console.log(`🎥 Camera allowed: ${studentId} (Room: ${roomId})`);
+
+  io.to(studentId).emit("camera-allowed");
+});
+
+socket.on("revoke-camera", ({ roomId, studentId }) => {
+  const room = rooms[roomId];
+  if (!room || socket.id !== room.teacher) return; // only the teacher may revoke this
+
+  room.allowedCameras.delete(studentId);
+  const wasOn = room.activeCameras.delete(studentId);
+
+  console.log(`🎥 Camera revoked: ${studentId} (Room: ${roomId})`);
+
+  io.to(studentId).emit("camera-revoked");
+  // If their tile was live, tell the room to hide it immediately rather
+  // than waiting for the student's own client to notice and turn it off.
+  if (wasOn) {
+    io.to(roomId).emit("camera-state", { participantId: studentId, on: false });
+  }
+});
+
+// Sent by anyone (teacher or an approved student) whenever their own camera
+// track is enabled/disabled locally. Re-broadcast to the room so every
+// mesh peer's tile UI shows/hides in sync — the actual video frames travel
+// peer-to-peer over the existing offer/answer/ice-candidate relay, this
+// event is only the "is it worth rendering" signal.
+socket.on("camera-state", ({ roomId, on }) => {
+  const room = rooms[roomId];
+  if (!room) return;
+
+  const isTeacher = socket.id === room.teacher;
+  const isStudent = room.students.includes(socket.id);
+  if (!isTeacher && !isStudent) return;
+  if (isStudent && !room.allowedCameras.has(socket.id)) return; // never trust a student's "on" without a grant
+
+  if (on) {
+    room.activeCameras.add(socket.id);
+  } else {
+    room.activeCameras.delete(socket.id);
+  }
+
+  console.log(`🎥 Camera state [${roomId}]: ${socket.id} -> ${on ? "on" : "off"}`);
+
+  io.to(roomId).emit("camera-state", { participantId: socket.id, on: !!on });
+});
+
+// ==========================
 // Chat — whole-room broadcast (no DMs yet). Messages may optionally quote an
 // earlier message via replyTo — still broadcast to everyone, just rendered
 // as "replying to X" so a targeted reply keeps its context.
@@ -563,7 +648,17 @@ socket.on("ice-candidate", ({ targetId, roomId, candidate }) => {
       );
       room.raisedHands.delete(socket.id);
       room.allowedSpeakers.delete(socket.id);
+      room.allowedCameras.delete(socket.id);
+      room.activeCameras.delete(socket.id);
       if (room.studentNames) delete room.studentNames[socket.id];
+
+      // Mesh cleanup: every remaining student has a direct PeerConnection to
+      // the one who just left and needs to close it (the teacher's own
+      // per-student PeerConnection is torn down separately via the existing
+      // student-left flow it already has).
+      room.students.forEach((remainingId) => {
+        io.to(remainingId).emit("peer-left", { studentId: socket.id });
+      });
 
       // A departing student's vote shouldn't keep counting toward the live
       // tally — drop it and re-broadcast so the teacher's (and everyone
