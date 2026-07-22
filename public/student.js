@@ -210,15 +210,7 @@
       clearTimeout(slowConnectTimer);
       logToTeacher("✅ Connected to signaling server");
 
-      // BUG FIX: Socket.IO's "connect" event fires on every reconnect too,
-      // not just the first connection — including silent automatic
-      // reconnects after a brief network blip. Each reconnect gets a NEW
-      // socket.id, and the server uses socket.id as the student's identity.
-      // If we blindly re-emit "join-room" here every time, one real
-      // student who has a momentary Wi-Fi hiccup shows up as a SECOND
-      // student on the teacher's roster. Only auto-join on the very first
-      // connect; treat any later reconnect as "connection lost", matching
-      // the manual rejoin flow instead of silently duplicating the join.
+
       if (!hasJoinedOnce) {
         hasJoinedOnce = true;
         socket.emit("join-room", { roomId, name: nameInput.value.trim() });

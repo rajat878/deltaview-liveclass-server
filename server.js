@@ -123,9 +123,7 @@ app.delete("/api/roster/:code", (req, res) => {
   res.json({ ok: true });
 });
 
-// ==========================
-// Attendance REST API
-// ==========================
+
 
 // List past + in-progress sessions with a quick attendee count, newest first.
 app.get("/api/sessions", (req, res) => {
