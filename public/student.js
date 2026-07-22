@@ -35,31 +35,17 @@
   const fullscreenBtn = document.getElementById("fullscreen-btn");
   const rejoinBtn     = document.getElementById("rejoin-btn");
   const micBtn        = document.getElementById("mic-btn");
+  const camBtn        = document.getElementById("cam-btn");
+  const teacherCamVideo = document.getElementById("teacher-cam-video");
+  const localCamPreview = document.getElementById("local-cam-preview");
   const raiseHandBtn  = document.getElementById("raise-hand-btn");
-  const confusedBtn   = document.getElementById("confused-btn");
   const statusBanner  = document.getElementById("status-banner");
-  const channelReadout = document.getElementById("channel-readout"); // optional; decorative only
-  const confusionOverlay   = document.getElementById("confusion-overlay");
-  const confusionBox       = document.getElementById("confusion-box");
-  const confusionActions   = document.getElementById("confusion-actions");
-  const confusionSendBtn   = document.getElementById("confusion-send-btn");
+  const confusedBtn       = document.getElementById("confused-btn");
+  const confusionOverlay  = document.getElementById("confusion-overlay");
+  const confusionBox      = document.getElementById("confusion-box");
+  const confusionActions  = document.getElementById("confusion-actions");
+  const confusionSendBtn  = document.getElementById("confusion-send-btn");
   const confusionCancelBtn = document.getElementById("confusion-cancel-btn");
-
-  // ── Chat (optional; decorative only — page still works if these are missing) ──
-  const chatToggleBtn  = document.getElementById("chat-toggle-btn");
-  const chatBadge      = document.getElementById("chat-badge");
-  const chatDrawer     = document.getElementById("chat-drawer");
-  const chatCloseBtn   = document.getElementById("chat-close-btn");
-  const chatMessagesEl = document.getElementById("chat-messages");
-  const chatInput      = document.getElementById("chat-input");
-  const chatSendBtn    = document.getElementById("chat-send-btn");
-
-  // ── Poll (optional; decorative only — page still works if these are missing) ──
-  const pollToggleBtn = document.getElementById("poll-toggle-btn");
-  const pollBadge     = document.getElementById("poll-badge");
-  const pollDrawer    = document.getElementById("poll-drawer");
-  const pollCloseBtn  = document.getElementById("poll-close-btn");
-  const pollBodyEl    = document.getElementById("poll-body");
 
   // ── Fail loudly (but not silently-dead) if the HTML and this script are
   // out of sync — e.g. an element was renamed/removed in one file but not
@@ -72,7 +58,10 @@
     joinScreen, waitingScreen, liveScreen, endedScreen,
     joinBtn, pinInput, nameInput, joinError,
     remoteVideo, fullscreenBtn, rejoinBtn, micBtn,
+    camBtn, teacherCamVideo, localCamPreview,
     raiseHandBtn, statusBanner,
+    confusedBtn, confusionOverlay, confusionBox, confusionActions,
+    confusionSendBtn, confusionCancelBtn,
   };
   const missing = Object.entries(required)
     .filter(([, el]) => !el)
@@ -87,20 +76,13 @@
   let roomId       = null;
   let micTrack        = null; // local mic MediaStreamTrack, once permission is granted
   let micTransceiver   = null; // the reserved "send our mic to teacher" m-line for the current pc
+  let cameraTrack       = null; // local camera MediaStreamTrack, once permission is granted
+  let cameraTransceiver = null; // the reserved "send our camera to teacher" m-line (index 4) for the current pc
+  let teacherCamTransceiver = null; // the reserved "receive teacher's camera" m-line (index 3) for the current pc
+  let cameraOn          = false;
   let handRaised       = false; // has this student asked to speak?
   let speakAllowed      = false; // has the teacher granted mic permission?
   let bannerTimer       = null;
-  let chatOpen          = false;
-  let unreadChatCount    = 0;
-  let mySocketId        = null; // set once "connect" fires; used to tell "mine" bubbles apart
-
-  // ── Poll state ──────────────────────────────────────────────────────
-  // activePoll is null when no poll has run yet this session; otherwise:
-  // { question, options: [{id, text, count, pct}], totalVotes, active, myVote }
-  let activePoll   = null;
-  let pollOpen     = false;
-  let pollSeen     = true; // false right after a poll starts, until the drawer is opened
-  let pollSelected = null; // optionId the student has tapped but not yet submitted
 
   function showBanner(msg, kind) {
     statusBanner.textContent = msg;
@@ -121,180 +103,10 @@
     setMicButtonState(false);
     micBtn.disabled = true;
     micBtn.textContent = "🔒 Mic locked";
-  }
-
-  // ── Chat helpers ────────────────────────────────────────────────────
-  function escapeHtml(str) {
-    const div = document.createElement("div");
-    div.textContent = str;
-    return div.innerHTML;
-  }
-
-  function renderChatMessage(msg) {
-    if (!chatMessagesEl) return;
-    const empty = chatMessagesEl.querySelector(".chat-empty");
-    if (empty) empty.remove();
-
-    const mine = msg.senderId === mySocketId;
-    const row = document.createElement("div");
-    row.className = "chat-msg" + (mine ? " mine" : "") + (msg.role === "teacher" ? " teacher" : "");
-
-    const sender = document.createElement("div");
-    sender.className = "chat-sender";
-    sender.textContent = mine ? "You" : (msg.senderName || "Student") + (msg.role === "teacher" ? " · Teacher" : "");
-
-    const bubble = document.createElement("div");
-    bubble.className = "chat-bubble";
-    if (msg.replyTo && msg.replyTo.text) {
-      const quote = document.createElement("div");
-      quote.className = "chat-reply-quote";
-      quote.innerHTML =
-        `<span class="chat-reply-name">${escapeHtml(msg.replyTo.senderName || "")}</span>` +
-        `<span class="chat-reply-text">${escapeHtml(msg.replyTo.text)}</span>`;
-      bubble.appendChild(quote);
-    }
-    const bodyEl = document.createElement("div");
-    bodyEl.innerHTML = escapeHtml(msg.text);
-    bubble.appendChild(bodyEl);
-
-    row.appendChild(sender);
-    row.appendChild(bubble);
-    chatMessagesEl.appendChild(row);
-    chatMessagesEl.scrollTop = chatMessagesEl.scrollHeight;
-  }
-
-  function resetChatUI() {
-    if (chatMessagesEl) {
-      chatMessagesEl.innerHTML = '<div class="chat-empty">No messages yet — say hi 👋</div>';
-    }
-    unreadChatCount = 0;
-    updateChatBadge();
-    chatOpen = false;
-    if (chatDrawer) chatDrawer.classList.remove("open");
-  }
-
-  function updateChatBadge() {
-    if (!chatBadge) return;
-    if (unreadChatCount > 0) {
-      chatBadge.textContent = unreadChatCount > 9 ? "9+" : String(unreadChatCount);
-      chatBadge.classList.remove("hidden");
-    } else {
-      chatBadge.classList.add("hidden");
-    }
-  }
-
-  function setChatOpen(open) {
-    chatOpen = open;
-    if (chatDrawer) chatDrawer.classList.toggle("open", open);
-    if (open) {
-      unreadChatCount = 0;
-      updateChatBadge();
-      if (chatInput) setTimeout(() => chatInput.focus(), 250);
-    }
-  }
-
-  function sendChatMessage() {
-    if (!chatInput || !socket || !socket.connected || !roomId) return;
-    const text = chatInput.value.trim();
-    if (!text) return;
-    socket.emit("chat-message", { roomId, text });
-    chatInput.value = "";
-  }
-
-  // ── Poll helpers ─────────────────────────────────────────────────────
-  function updatePollBadge() {
-    if (!pollBadge) return;
-    const showBadge = !!activePoll && activePoll.active && !pollSeen && !pollOpen;
-    pollBadge.classList.toggle("hidden", !showBadge);
-  }
-
-  function setPollOpen(open) {
-    pollOpen = open;
-    if (pollDrawer) pollDrawer.classList.toggle("open", open);
-    if (open) {
-      pollSeen = true;
-      updatePollBadge();
-    }
-  }
-
-  function resetPollUI() {
-    activePoll = null;
-    pollSelected = null;
-    pollSeen = true;
-    pollOpen = false;
-    if (pollDrawer) pollDrawer.classList.remove("open");
-    renderPoll();
-  }
-
-  // Renders whichever state applies: no poll yet, still voting (not voted),
-  // or results (voted already, or the poll has ended). Fully re-rendered on
-  // every update rather than patched incrementally — a poll changes shape
-  // rarely enough (once per start/vote/end) that this is simpler and can't
-  // drift out of sync with the data.
-  function renderPoll() {
-    if (!pollBodyEl) return;
-
-    if (!activePoll) {
-      pollBodyEl.innerHTML = '<div class="poll-empty">No poll running right now.</div>';
-      return;
-    }
-
-    const showResults = !activePoll.active || activePoll.myVote != null;
-
-    if (!showResults) {
-      const optionsHtml = activePoll.options.map((opt) => {
-        const selected = pollSelected === opt.id;
-        return (
-          `<button type="button" class="poll-option-btn${selected ? " selected" : ""}" data-option-id="${escapeHtml(opt.id)}">` +
-            `<span class="opt-dot"></span><span>${escapeHtml(opt.text)}</span>` +
-          `</button>`
-        );
-      }).join("");
-
-      pollBodyEl.innerHTML =
-        `<div class="poll-question">${escapeHtml(activePoll.question)}</div>` +
-        optionsHtml +
-        `<button type="button" id="poll-vote-btn"${pollSelected ? "" : " disabled"}>Submit vote</button>`;
-
-      pollBodyEl.querySelectorAll(".poll-option-btn").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          pollSelected = btn.getAttribute("data-option-id");
-          renderPoll();
-        });
-      });
-
-      const voteBtn = document.getElementById("poll-vote-btn");
-      if (voteBtn) voteBtn.addEventListener("click", submitPollVote);
-    } else {
-      const rowsHtml = activePoll.options.map((opt) => {
-        const mine = activePoll.myVote === opt.id;
-        return (
-          `<div class="poll-result-row">` +
-            `<div class="poll-result-top">` +
-              `<span class="poll-result-label${mine ? " poll-result-mine" : ""}">${escapeHtml(opt.text)}${mine ? " · Your vote" : ""}</span>` +
-              `<span class="poll-result-count">${opt.count} · ${opt.pct}%</span>` +
-            `</div>` +
-            `<div class="poll-bar-track"><div class="poll-bar-fill" style="width:${opt.pct}%"></div></div>` +
-          `</div>`
-        );
-      }).join("");
-
-      pollBodyEl.innerHTML =
-        (!activePoll.active ? '<span class="poll-ended-tag">Poll closed</span>' : "") +
-        `<div class="poll-question">${escapeHtml(activePoll.question)}</div>` +
-        rowsHtml +
-        `<div class="poll-total-votes">${activePoll.totalVotes} vote${activePoll.totalVotes === 1 ? "" : "s"}</div>`;
-    }
-  }
-
-  function submitPollVote() {
-    if (!pollSelected || !socket || !socket.connected || !roomId) return;
-    socket.emit("submit-vote", { roomId, optionId: pollSelected });
-    // Optimistically mark as voted so results render immediately; the
-    // server's "poll-results" broadcast (which includes everyone else's
-    // votes too) arrives right behind this and reconciles the counts.
-    if (activePoll) activePoll.myVote = pollSelected;
-    renderPoll();
+    setCamButtonState(false);
+    camBtn.disabled = true;
+    camBtn.textContent = "🔒 Camera locked";
+    stopLocalCamera();
   }
 
   // ── Relay console logs to the teacher's app via the signaling server,
@@ -379,11 +191,7 @@
 
     if (socket) socket.disconnect();
 
-    if (channelReadout) channelReadout.textContent = "CH · " + roomId;
-
     resetHandAndSpeakState();
-    resetChatUI();
-    resetPollUI();
     show(waitingScreen);
 
     const waitingSubtitle = waitingScreen.querySelector(".subtitle");
@@ -400,7 +208,6 @@
 
     socket.on("connect", () => {
       clearTimeout(slowConnectTimer);
-      mySocketId = socket.id;
       logToTeacher("✅ Connected to signaling server");
 
       // BUG FIX: Socket.IO's "connect" event fires on every reconnect too,
@@ -432,56 +239,6 @@
 
     socket.on("join-success", (data) => {
       logToTeacher("✅ Joined room:", data.roomId);
-      if (Array.isArray(data.chatHistory) && data.chatHistory.length) {
-        if (chatMessagesEl) chatMessagesEl.innerHTML = "";
-        data.chatHistory.forEach(renderChatMessage);
-      }
-      if (data.poll) {
-        activePoll = data.poll;
-        pollSeen = !activePoll.active; // don't badge a poll that's already closed
-        renderPoll();
-        updatePollBadge();
-      }
-    });
-
-    socket.on("chat-message", (msg) => {
-      renderChatMessage(msg);
-      if (msg.senderId !== mySocketId && !chatOpen) {
-        unreadChatCount++;
-        updateChatBadge();
-      }
-    });
-
-    // ── Poll ──────────────────────────────────────────────────────────
-    socket.on("poll-started", (data) => {
-      logToTeacher("📊 Poll started:", data.question);
-      activePoll = {
-        question: data.question,
-        options: (data.options || []).map((o) => ({ ...o, count: 0, pct: 0 })),
-        totalVotes: 0,
-        active: true,
-        myVote: null,
-      };
-      pollSelected = null;
-      pollSeen = false;
-      renderPoll();
-      updatePollBadge();
-      if (!pollOpen) showBanner("📊 A new poll just started — tap the poll icon to vote.");
-    });
-
-    socket.on("poll-results", (results) => {
-      if (!results) return;
-      const myVote = activePoll ? activePoll.myVote : null;
-      activePoll = { ...results, myVote };
-      renderPoll();
-    });
-
-    socket.on("poll-ended", (results) => {
-      if (!results) return;
-      logToTeacher("📊 Poll ended:", results.question);
-      const myVote = activePoll ? activePoll.myVote : null;
-      activePoll = { ...results, active: false, myVote };
-      renderPoll();
     });
 
     socket.on("join-error", (data) => {
@@ -498,17 +255,21 @@
     // ── Teacher granted this student permission to speak. Unlock the mic
     // button (still starts muted — the student must tap it themselves) and
     // clear the raised-hand indicator since the request has been answered.
+    // Camera unlocks alongside mic — "allowed to speak" doubles as
+    // "allowed on camera", so there's no separate teacher control needed.
     socket.on("speak-allowed", () => {
       logToTeacher("🎤 Teacher allowed you to speak");
       speakAllowed = true;
       micBtn.disabled = false;
       setMicButtonState(false);
+      camBtn.disabled = false;
+      setCamButtonState(false);
       setRaiseHandButtonState(false);
-      showBanner("🎤 The teacher allowed you to speak — tap the mic to unmute.", "granted");
+      showBanner("🎤 The teacher allowed you to speak — tap the mic/camera to turn them on.", "granted");
     });
 
     // ── Teacher revoked mic permission (or it was never granted). Force the
-    // mic off immediately and lock the button again.
+    // mic AND camera off immediately and lock both buttons again.
     socket.on("speak-muted", () => {
       logToTeacher("🔇 Teacher turned off your mic access");
       speakAllowed = false;
@@ -516,7 +277,10 @@
       setMicButtonState(false);
       micBtn.disabled = true;
       micBtn.textContent = "🔒 Mic locked";
-      showBanner("🔇 The teacher turned off your mic access.", "revoked");
+      stopLocalCamera();
+      camBtn.disabled = true;
+      camBtn.textContent = "🔒 Camera locked";
+      showBanner("🔇 The teacher turned off your mic/camera access.", "revoked");
     });
 
     socket.on("offer", async (data) => {
@@ -548,6 +312,28 @@
     pc = new RTCPeerConnection(RTC_CONFIG);
 
     pc.ontrack = (event) => {
+      const idx = pc.getTransceivers().indexOf(event.transceiver);
+
+      if (idx === 3) {
+        // Teacher's own camera — separate track/element from the screen share.
+        logToTeacher("🎥 Teacher camera stream received");
+        teacherCamVideo.srcObject = event.streams[0] || new MediaStream([event.track]);
+        teacherCamVideo.play().catch(console.error);
+        teacherCamVideo.classList.remove("hidden");
+        return;
+      }
+
+      if (idx === 4) {
+        // Our own outgoing camera line — never carries an incoming track
+        // (teacher's offer marks it recvonly on their side, so it's
+        // sendonly here); nothing to render.
+        return;
+      }
+
+      // idx 0 (screen video) and idx 1 (teacher audio) — same behavior as
+      // before: both were added on the teacher side with the same stream
+      // id ("live-stream"), so they arrive bundled into one MediaStream
+      // and a single <video> element plays both.
       logToTeacher("🎥 Remote stream received");
       remoteVideo.srcObject = event.streams[0];
       remoteVideo.play().catch(console.error);
@@ -592,6 +378,10 @@
         transceivers.map((t, i) => `[${i}] ${t.receiver.track?.kind} dir=${t.direction} mid=${t.mid}`).join(", ")
       );
       micTransceiver = transceivers[2] || null;
+      // [3] recvonly on our side — teacher's camera arrives here (handled in pc.ontrack above).
+      teacherCamTransceiver = transceivers[3] || null;
+      // [4] sendonly on our side — reserved for OUR camera, mirrors the mic pattern below.
+      cameraTransceiver = transceivers[4] || null;
 
       // BUG FIX: previously we only requested the mic + attached it the
       // FIRST time the student tapped "Mic on" — which happens well after
@@ -641,6 +431,33 @@
         logToTeacher("No reserved audio-return transceiver found — mic feature unavailable this session.");
       }
 
+      // Same fix, same reason, for the camera m-line: if no track is
+      // attached before createAnswer(), this line negotiates "inactive"
+      // and toggleCamera()'s later replaceTrack() would silently do
+      // nothing. Pre-attach now with the track DISABLED (a video track
+      // with enabled=false sends black frames instead of audio silence,
+      // but negotiates identically) so tapping "Camera on" later is just
+      // an .enabled flip with zero renegotiation risk.
+      if (cameraTransceiver && !cameraTrack) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+          cameraTrack = stream.getVideoTracks()[0];
+          cameraTrack.enabled = false; // off until the student taps the button
+          await cameraTransceiver.sender.replaceTrack(cameraTrack);
+          cameraTransceiver.direction = "sendonly";
+          localCamPreview.srcObject = new MediaStream([cameraTrack]);
+          logToTeacher("Camera pre-attached (off). mid:", cameraTransceiver.mid, "direction now:", cameraTransceiver.direction);
+        } catch (e) {
+          logToTeacher("Camera permission not granted at join time — camera feature unavailable this session.", e);
+          cameraTransceiver = null;
+        }
+      } else if (cameraTransceiver && cameraTrack) {
+        await cameraTransceiver.sender.replaceTrack(cameraTrack);
+        cameraTransceiver.direction = "sendonly";
+      } else {
+        logToTeacher("No reserved camera-return transceiver found — camera feature unavailable this session.");
+      }
+
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
 
@@ -669,8 +486,20 @@
     if (pc) { pc.close(); pc = null; }
     if (remoteVideo) { remoteVideo.pause(); remoteVideo.srcObject = null; }
     micTransceiver = null;
+    cameraTransceiver = null;
+    teacherCamTransceiver = null;
+    if (teacherCamVideo) { teacherCamVideo.pause(); teacherCamVideo.srcObject = null; teacherCamVideo.classList.add("hidden"); }
+    stopLocalCamera();
     resetHandAndSpeakState();
-    if (typeof exitConfusionMode === "function" && confusionActive) exitConfusionMode();
+    if (confusionActive) exitConfusionMode();
+  }
+
+  /** Stops and releases the student's own camera track/preview (does NOT touch the reserved transceiver — that's per-pc and gets nulled in cleanupPeerConnection). */
+  function stopLocalCamera() {
+    cameraOn = false;
+    if (cameraTrack) { cameraTrack.stop(); cameraTrack = null; }
+    if (localCamPreview) { localCamPreview.pause(); localCamPreview.srcObject = null; localCamPreview.classList.add("hidden"); }
+    setCamButtonState(false);
   }
 
   function setMicButtonState(on) {
@@ -712,21 +541,70 @@
     setMicButtonState(turningOn);
   }
 
+  function setCamButtonState(on) {
+    camBtn.textContent = on ? "📷 Camera on" : "📷 Camera off";
+    camBtn.classList.toggle("cam-on", on);
+  }
+
+  async function toggleCamera() {
+    if (!speakAllowed) {
+      showBanner("✋ Raise your hand and wait for the teacher to allow you to speak.");
+      return;
+    }
+
+    if (!cameraTransceiver || !cameraTrack) {
+      // Either the reserved line wasn't available, or camera permission
+      // was denied when the student joined — give them one more chance.
+      if (cameraTransceiver && !cameraTrack) {
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user" } });
+          cameraTrack = stream.getVideoTracks()[0];
+          cameraTrack.enabled = true;
+          await cameraTransceiver.sender.replaceTrack(cameraTrack);
+          cameraTransceiver.direction = "sendonly";
+          localCamPreview.srcObject = new MediaStream([cameraTrack]);
+          localCamPreview.play().catch(console.error);
+          localCamPreview.classList.remove("hidden");
+          cameraOn = true;
+          setCamButtonState(true);
+          return;
+        } catch (e) {
+          logToTeacher("Could not access camera", e);
+        }
+      }
+      const original = camBtn.textContent;
+      camBtn.textContent = "⚠️ Camera unavailable";
+      setTimeout(() => { camBtn.textContent = original; }, 2500);
+      return;
+    }
+
+    cameraOn = !cameraTrack.enabled;
+    cameraTrack.enabled = cameraOn;
+    localCamPreview.classList.toggle("hidden", !cameraOn);
+    if (cameraOn) { localCamPreview.play().catch(console.error); }
+    setCamButtonState(cameraOn);
+  }
+
   // ── "Confused" area select ──────────────────────────────────────────
-  // Drag directly over the mirrored teacher screen to mark exactly where
-  // you're confused, instead of a blind tap that only records *when*. The
-  // drag rectangle is converted to coordinates normalized (0..1) to the
-  // actual VIDEO CONTENT area — not the raw viewport — which is what makes
-  // this land accurately on the teacher's side: <video> uses
-  // object-fit:contain, so depending on the student's screen aspect ratio
-  // there can be black letterbox bars above/below or left/right of the
-  // picture. Normalizing to the rendered picture (not the element box)
-  // means the same relative spot lands in the same place on the teacher's
-  // canvas regardless of the student's device shape.
+  // Lets the student drag a box directly over the mirrored teacher screen
+  // to mark exactly where they're confused, instead of a plain "Confused"
+  // tap that only records *when*, not *where*. We convert the drag
+  // rectangle into coordinates normalized (0..1) to the actual VIDEO
+  // CONTENT area (not the raw screen/viewport), which is what makes this
+  // accurate: <video> uses object-fit:contain, so depending on the
+  // student's screen aspect ratio there can be black letterbox bars above/
+  // below or left/right of the picture. Sending raw pixel taps (or taps
+  // normalized to the whole viewport) is exactly why the old approach
+  // landed in the wrong place on the teacher's screen — a tap in a
+  // letterbox bar, or on a differently-shaped phone, mapped to a different
+  // relative spot on the teacher's canvas. Normalizing to the actual
+  // rendered picture makes the mapping identical regardless of device.
   let confusionActive = false;
-  let dragStart = null;    // {x, y} in viewport px, where the drag began
+  let dragStart = null;   // {x, y} in viewport px, where the drag began
   let dragLastRect = null; // last on-screen box rect (viewport px), for sending
 
+  // Returns the video's rendered content rectangle within its element box
+  // (in viewport px), accounting for object-fit:contain letterboxing.
   function getVideoContentRect() {
     const rect = remoteVideo.getBoundingClientRect();
     const vw = remoteVideo.videoWidth;
@@ -738,11 +616,13 @@
 
     let contentWidth, contentHeight, offsetX, offsetY;
     if (videoRatio > elementRatio) {
+      // Video is relatively wider than the element — letterboxed top/bottom.
       contentWidth = rect.width;
       contentHeight = rect.width / videoRatio;
       offsetX = 0;
       offsetY = (rect.height - contentHeight) / 2;
     } else {
+      // Letterboxed left/right.
       contentHeight = rect.height;
       contentWidth = rect.height * videoRatio;
       offsetY = 0;
@@ -756,16 +636,20 @@
     };
   }
 
+  // Clamps a viewport-px point into the video content rect and returns it
+  // normalized 0..1 relative to that content rect.
   function toNormalized(clientX, clientY, contentRect) {
     const x = (clientX - contentRect.left) / contentRect.width;
     const y = (clientY - contentRect.top) / contentRect.height;
-    return { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) };
+    return {
+      x: Math.min(1, Math.max(0, x)),
+      y: Math.min(1, Math.max(0, y)),
+    };
   }
 
-  const MIN_BOX_FRACTION = 0.05; // a bare tap still marks a visible, sendable area
+  const MIN_BOX_FRACTION = 0.05; // smallest side, as a fraction of video width — a bare tap still marks a visible, sendable area
 
   function enterConfusionMode() {
-    if (!confusionOverlay) return;
     confusionActive = true;
     dragStart = null;
     dragLastRect = null;
@@ -776,7 +660,6 @@
   }
 
   function exitConfusionMode() {
-    if (!confusionOverlay) return;
     confusionActive = false;
     dragStart = null;
     dragLastRect = null;
@@ -793,6 +676,8 @@
     let x2 = Math.max(dragStart.x, clientX);
     let y2 = Math.max(dragStart.y, clientY);
 
+    // A tap with little/no movement still yields a small, visible,
+    // centered box rather than a 0×0 rectangle nobody can see or send.
     const minSide = contentRect.width * MIN_BOX_FRACTION;
     if (x2 - x1 < minSide) {
       const cx = (x1 + x2) / 2;
@@ -813,59 +698,57 @@
     confusionBox.classList.add("show");
   }
 
-  if (confusionOverlay) {
-    confusionOverlay.addEventListener("pointerdown", (e) => {
-      dragStart = { x: e.clientX, y: e.clientY };
-      confusionActions.classList.remove("show");
-      updateBoxFromDrag(e.clientX, e.clientY);
-    });
+  confusedBtn.addEventListener("click", () => {
+    if (liveScreen.classList.contains("hidden")) return; // only while live
+    if (confusionActive) { exitConfusionMode(); return; }
+    enterConfusionMode();
+  });
 
-    confusionOverlay.addEventListener("pointermove", (e) => {
-      if (!dragStart) return;
-      updateBoxFromDrag(e.clientX, e.clientY);
-    });
+  confusionOverlay.addEventListener("pointerdown", (e) => {
+    dragStart = { x: e.clientX, y: e.clientY };
+    confusionActions.classList.remove("show");
+    updateBoxFromDrag(e.clientX, e.clientY);
+  });
 
-    confusionOverlay.addEventListener("pointerup", (e) => {
-      if (!dragStart) return;
-      updateBoxFromDrag(e.clientX, e.clientY);
-      dragStart = null;
-      confusionActions.classList.add("show");
-    });
+  confusionOverlay.addEventListener("pointermove", (e) => {
+    if (!dragStart) return;
+    updateBoxFromDrag(e.clientX, e.clientY);
+  });
 
-    confusionCancelBtn.addEventListener("click", exitConfusionMode);
+  confusionOverlay.addEventListener("pointerup", (e) => {
+    if (!dragStart) return;
+    updateBoxFromDrag(e.clientX, e.clientY);
+    dragStart = null;
+    confusionActions.classList.add("show");
+  });
 
-    confusionSendBtn.addEventListener("click", () => {
-      if (!dragLastRect || !socket || !socket.connected || !roomId) {
-        exitConfusionMode();
-        return;
-      }
-      const contentRect = getVideoContentRect();
-      const topLeft = toNormalized(dragLastRect.left, dragLastRect.top, contentRect);
-      const bottomRight = toNormalized(
-        dragLastRect.left + dragLastRect.width,
-        dragLastRect.top + dragLastRect.height,
-        contentRect
-      );
+  confusionCancelBtn.addEventListener("click", exitConfusionMode);
 
-      socket.emit("mark-confused", {
-        roomId,
-        x: topLeft.x,
-        y: topLeft.y,
-        w: Math.max(0.01, bottomRight.x - topLeft.x),
-        h: Math.max(0.01, bottomRight.y - topLeft.y),
-      });
-
-      showBanner("😵 Marked — the teacher can see exactly where.");
+  confusionSendBtn.addEventListener("click", () => {
+    if (!dragLastRect || !socket || !socket.connected || !roomId) {
       exitConfusionMode();
+      return;
+    }
+    const contentRect = getVideoContentRect();
+    const topLeft = toNormalized(dragLastRect.left, dragLastRect.top, contentRect);
+    const bottomRight = toNormalized(
+      dragLastRect.left + dragLastRect.width,
+      dragLastRect.top + dragLastRect.height,
+      contentRect
+    );
 
-      confusedBtn.classList.add("confused-flash");
-      confusedCooldown = true;
-      setTimeout(() => {
-        confusedBtn.classList.remove("confused-flash");
-        confusedCooldown = false;
-      }, 3000);
+    socket.emit("confusion-marked", {
+      roomId,
+      name: nameInput.value.trim() || "Student",
+      x: topLeft.x,
+      y: topLeft.y,
+      w: Math.max(0.01, bottomRight.x - topLeft.x),
+      h: Math.max(0.01, bottomRight.y - topLeft.y),
     });
-  }
+
+    showBanner("📍 Confusion marked — the teacher can see exactly where.");
+    exitConfusionMode();
+  });
 
   // ── Auto-fill room code from URL ?room=ROOMCODE ───────────────────────
   const urlParams = new URLSearchParams(window.location.search);
@@ -883,20 +766,7 @@
   });
 
   micBtn.addEventListener("click", toggleMic);
-
-  // Confused button opens the drag-to-select overlay (see above) instead of
-  // firing blind — the whole point is telling the teacher exactly WHERE,
-  // not just that a tap happened. A short cooldown after sending stops a
-  // nervous double-tap from spamming duplicate signals for the same moment.
-  let confusedCooldown = false;
-  if (confusedBtn) {
-    confusedBtn.addEventListener("click", () => {
-      if (!socket || !socket.connected || !roomId) return;
-      if (confusedCooldown) return;
-      if (confusionActive) { exitConfusionMode(); return; }
-      enterConfusionMode();
-    });
-  }
+  camBtn.addEventListener("click", toggleCamera);
 
   raiseHandBtn.addEventListener("click", () => {
     if (!socket || !socket.connected || !roomId) return;
@@ -912,16 +782,6 @@
 
   // Mic starts locked every page load until the teacher grants permission.
   micBtn.disabled = true;
-
-  if (chatToggleBtn) chatToggleBtn.addEventListener("click", () => setChatOpen(!chatOpen));
-  if (chatCloseBtn) chatCloseBtn.addEventListener("click", () => setChatOpen(false));
-  if (chatSendBtn) chatSendBtn.addEventListener("click", sendChatMessage);
-  if (chatInput) chatInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") sendChatMessage();
-  });
-
-  if (pollToggleBtn) pollToggleBtn.addEventListener("click", () => setPollOpen(!pollOpen));
-  if (pollCloseBtn) pollCloseBtn.addEventListener("click", () => setPollOpen(false));
 
   fullscreenBtn.addEventListener("click", () => {
     if (remoteVideo.requestFullscreen) remoteVideo.requestFullscreen();
