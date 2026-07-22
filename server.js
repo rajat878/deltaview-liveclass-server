@@ -395,7 +395,6 @@ socket.on("end-poll", ({ roomId }) => {
   console.log(`📊 Poll ended [${roomId}]: "${room.poll.question}"`);
 
   io.to(roomId).emit("poll-ended", buildPollResults(room));
-  io.to(room.teacher).emit("poll-voters", buildPollVoterBreakdown(room));
 });
 
 // ==========================
@@ -572,7 +571,6 @@ socket.on("ice-candidate", ({ targetId, roomId, candidate }) => {
       if (room.poll && room.poll.votes[socket.id] !== undefined) {
         delete room.poll.votes[socket.id];
         io.to(roomId).emit("poll-results", buildPollResults(room));
-        io.to(room.teacher).emit("poll-voters", buildPollVoterBreakdown(room));
       }
 
       const attendanceRowId = room.attendanceRows && room.attendanceRows[socket.id];
