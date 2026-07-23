@@ -3,18 +3,21 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0F172A" />
   <title>DeltaView Live Class</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600&display=swap" rel="stylesheet">
   <style>
     :root{
-      --ink:#0A0E17;
-      --panel:#141A2A;
-      --console:#1B2338;
-      --line:#28304A;
-      --paper:#EDEFF5;
-      --fog:#8891AA;
+      --ink:#0F172A;
+      --panel:#1E293B;
+      --console:#17203A;
+      --line:#334155;
+      --paper:#F1F5F9;
+      --fog:#94A3B8;
+      --primary:#6366F1;
+      --primary-2:#3A7BFF;
       --gold:#F2B134;
       --red:#FF4757;
       --green:#2ED573;
@@ -63,11 +66,11 @@
       font-weight:600;
       letter-spacing:.18em;
       text-transform:uppercase;
-      color:var(--gold);
+      color:var(--primary-2);
       display:inline-flex;align-items:center;gap:8px;
       margin-bottom:18px;
     }
-    .eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--gold);}
+    .eyebrow .dot{width:6px;height:6px;border-radius:50%;background:var(--primary-2);}
     h1{
       font-family:var(--font-display);
       font-weight:700;
@@ -87,7 +90,7 @@
       transition:border-color .15s, box-shadow .15s;
     }
     input::placeholder{color:#4B5573;}
-    input:focus{border-color:var(--gold);box-shadow:0 0 0 3px rgba(242,177,52,.15);}
+    input:focus{border-color:var(--primary);box-shadow:0 0 0 3px rgba(99,102,241,.18);}
     #pin-input{
       font-family:var(--font-mono);
       font-weight:600;
@@ -102,8 +105,9 @@
     button{
       width:100%;padding:15px;border-radius:12px;border:none;
       font-family:var(--font-body);font-size:.98rem;font-weight:600;
-      cursor:pointer;color:var(--paper);
-      background:var(--gold);color:#1A1204;
+      cursor:pointer;color:#fff;
+      background:linear-gradient(135deg,var(--primary),var(--primary-2));
+      box-shadow:0 8px 20px rgba(99,102,241,.28);
       transition:transform .08s ease, filter .15s ease;
     }
     button:hover{filter:brightness(1.08);}
@@ -118,7 +122,7 @@
     /* ── Tuning indicator (waiting screen) ───────────────────────── */
     .tuner{display:flex;align-items:flex-end;justify-content:center;gap:5px;height:44px;margin:0 auto 22px;}
     .tuner span{
-      width:6px;border-radius:3px;background:var(--gold);
+      width:6px;border-radius:3px;background:var(--primary);
       animation:tune 1.1s ease-in-out infinite;
     }
     .tuner span:nth-child(1){height:14px;animation-delay:0s;}
@@ -368,10 +372,10 @@
       flex:1;background:var(--console);border:1px solid var(--line);
       border-radius:12px;padding:10px 14px;color:var(--paper);font-size:.88rem;
     }
-    #chat-input:focus-visible{outline:2px solid var(--gold);outline-offset:1px;}
+    #chat-input:focus-visible{outline:2px solid var(--primary);outline-offset:1px;}
     #chat-send-btn{
       width:44px;height:44px;border-radius:12px;flex:none;
-      background:var(--gold);color:var(--ink);font-size:1.05rem;font-weight:700;
+      background:var(--primary-2);color:#fff;font-size:1.05rem;font-weight:700;
       border:none;display:flex;align-items:center;justify-content:center;padding:0;
     }
     #chat-send-btn:active{transform:translateY(1px);}
@@ -520,7 +524,7 @@
       *{animation-duration:.001ms !important;animation-iteration-count:1 !important;transition-duration:.001ms !important;}
     }
 
-    button:focus-visible, input:focus-visible{outline:2px solid var(--gold);outline-offset:2px;}
+    button:focus-visible, input:focus-visible{outline:2px solid var(--primary);outline-offset:2px;}
   </style>
 </head>
 <body>
