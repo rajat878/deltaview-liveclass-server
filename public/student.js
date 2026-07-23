@@ -66,6 +66,47 @@
   const cameraToggleBtn = document.getElementById("camera-toggle-btn");
   const cameraStrip     = document.getElementById("camera-strip");
 
+
+  const toolsMenuBtn = document.getElementById("tools-menu-btn");
+  const toolsMenu = document.getElementById("tools-menu");
+  const toolsBackdrop = document.getElementById("tools-backdrop");
+
+  function setToolsMenuOpen(open) {
+    if (!toolsMenu || !toolsMenuBtn || !toolsBackdrop) return;
+
+    toolsMenu.classList.toggle("hidden", !open);
+    toolsBackdrop.classList.toggle("hidden", !open);
+
+    toolsMenuBtn.setAttribute("aria-expanded", String(open));
+    toolsMenuBtn.setAttribute(
+      "aria-label",
+      open ? "Close class tools" : "Class tools"
+    );
+
+    toolsMenu.setAttribute("aria-hidden", String(!open));
+  }
+
+  if (toolsMenuBtn) {
+    toolsMenuBtn.addEventListener("click", (event) => {
+      event.stopPropagation();
+
+      const isOpen = !toolsMenu.classList.contains("hidden");
+      setToolsMenuOpen(!isOpen);
+    });
+  }
+
+  if (toolsBackdrop) {
+    toolsBackdrop.addEventListener("click", () => {
+      setToolsMenuOpen(false);
+    });
+  }
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      setToolsMenuOpen(false);
+    }
+  });
+
   // ── Fail loudly (but not silently-dead) if the HTML and this script are
   // out of sync — e.g. an element was renamed/removed in one file but not
   // the other. Previously a single null here (used later, e.g. at
